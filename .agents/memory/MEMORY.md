@@ -1,0 +1,2 @@
+- [Supabase connectivity](supabase-connectivity.md) — Direct PostgreSQL port 5432 blocked in Replit; use supabase-js over HTTPS only.
+- [Supabase table creation](supabase-table-creation.md) — Tables can't be created programmatically (Management API needs PAT); use SQL Editor manually.
