@@ -1,22 +1,27 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Sheets-to-Supabase sync dashboard API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: sync
+    description: Sync operations
+  - name: data
+    description: Data viewing
+  - name: stats
+    description: Summary stats
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +29,457 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /sync/status:
+    get:
+      operationId: getSyncStatus
+      tags: [sync]
+      summary: Get sync status for all sheets
+      responses:
+        "200":
+          description: Sync status per table
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SyncStatus"
+
+  /sync/logs:
+    get:
+      operationId: getSyncLogs
+      tags: [sync]
+      summary: Get sync history logs
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: table
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: Sync log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SyncLog"
+
+  /sync/run:
+    post:
+      operationId: runSync
+      tags: [sync]
+      summary: Trigger full sync of all sheets
+      responses:
+        "200":
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResult"
+
+  /sync/run/{table}:
+    post:
+      operationId: runTableSync
+      tags: [sync]
+      summary: Trigger sync for a specific table
+      parameters:
+        - in: path
+          name: table
+          required: true
+          schema:
+            type: string
+            enum: [cmdb, energy_dashboard, cow_movement]
+      responses:
+        "200":
+          description: Sync result for table
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResult"
+
+  /stats/overview:
+    get:
+      operationId: getOverviewStats
+      tags: [stats]
+      summary: Get high-level counts and sync summary
+      responses:
+        "200":
+          description: Overview statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverviewStats"
+
+  /data/cmdb:
+    get:
+      operationId: getCmdbData
+      tags: [data]
+      summary: List CMDB records
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: search
+          schema:
+            type: ["string", "null"]
+        - in: query
+          name: region
+          schema:
+            type: ["string", "null"]
+        - in: query
+          name: status
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: CMDB records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CmdbPage"
+
+  /data/energy-dashboard:
+    get:
+      operationId: getEnergyDashboardData
+      tags: [data]
+      summary: List Energy Dashboard records
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: search
+          schema:
+            type: ["string", "null"]
+        - in: query
+          name: status
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: Energy dashboard records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnergyPage"
+
+  /data/cow-movement:
+    get:
+      operationId: getCowMovementData
+      tags: [data]
+      summary: List COW Movement History records
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: search
+          schema:
+            type: ["string", "null"]
+        - in: query
+          name: cow_id
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: COW movement records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CowMovementPage"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    SyncStatus:
+      type: object
+      required: [table_name, row_count, last_synced_at, status]
+      properties:
+        table_name:
+          type: string
+        row_count:
+          type: integer
+        last_synced_at:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [ok, error, never_synced]
+        last_error:
+          type: ["string", "null"]
+
+    SyncLog:
+      type: object
+      required: [id, table_name, status, synced_at]
+      properties:
+        id:
+          type: integer
+        table_name:
+          type: string
+        rows_synced:
+          type: ["integer", "null"]
+        status:
+          type: string
+        error_message:
+          type: ["string", "null"]
+        duration_ms:
+          type: ["integer", "null"]
+        synced_at:
+          type: string
+
+    SyncResult:
+      type: object
+      required: [success, tables]
+      properties:
+        success:
+          type: boolean
+        tables:
+          type: array
+          items:
+            type: object
+            required: [table_name, rows_synced, success]
+            properties:
+              table_name:
+                type: string
+              rows_synced:
+                type: integer
+              success:
+                type: boolean
+              error:
+                type: ["string", "null"]
+              duration_ms:
+                type: integer
+
+    OverviewStats:
+      type: object
+      required: [cmdb_count, energy_count, cow_movement_count, last_full_sync, sync_running]
+      properties:
+        cmdb_count:
+          type: integer
+        energy_count:
+          type: integer
+        cow_movement_count:
+          type: integer
+        last_full_sync:
+          type: ["string", "null"]
+        sync_running:
+          type: boolean
+        on_air_count:
+          type: integer
+        regions:
+          type: array
+          items:
+            type: object
+            required: [region, count]
+            properties:
+              region:
+                type: string
+              count:
+                type: integer
+
+    CmdbRecord:
+      type: object
+      required: [id, cow_id]
+      properties:
+        id:
+          type: integer
+        row_num:
+          type: ["integer", "null"]
+        cow_id:
+          type: ["string", "null"]
+        site_label:
+          type: ["string", "null"]
+        ebu_royal:
+          type: ["string", "null"]
+        region:
+          type: ["string", "null"]
+        district:
+          type: ["string", "null"]
+        city:
+          type: ["string", "null"]
+        location:
+          type: ["string", "null"]
+        latitude:
+          type: ["number", "null"]
+        longitude:
+          type: ["number", "null"]
+        site_status:
+          type: ["string", "null"]
+        vendor:
+          type: ["string", "null"]
+        last_deploying_date:
+          type: ["string", "null"]
+        first_deploying_date:
+          type: ["string", "null"]
+        cow_old_new:
+          type: ["string", "null"]
+        technology:
+          type: ["string", "null"]
+        raw_data:
+          type: object
+        synced_at:
+          type: ["string", "null"]
+
+    CmdbPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CmdbRecord"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    EnergyRecord:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: integer
+        site:
+          type: ["string", "null"]
+        vendor:
+          type: ["string", "null"]
+        region_name:
+          type: ["string", "null"]
+        district_name:
+          type: ["string", "null"]
+        city_name:
+          type: ["string", "null"]
+        power_source:
+          type: ["string", "null"]
+        generator_capacity:
+          type: ["string", "null"]
+        technology:
+          type: ["string", "null"]
+        cow_status:
+          type: ["string", "null"]
+        total_on_air_days:
+          type: ["number", "null"]
+        latitude:
+          type: ["number", "null"]
+        longitude:
+          type: ["number", "null"]
+        tank_capacity:
+          type: ["number", "null"]
+        fuel_tank_level_pct:
+          type: ["string", "null"]
+        last_fueling_date:
+          type: ["string", "null"]
+        last_fueling_qty:
+          type: ["number", "null"]
+        next_fueling_plan:
+          type: ["string", "null"]
+        raw_data:
+          type: object
+        synced_at:
+          type: ["string", "null"]
+
+    EnergyPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/EnergyRecord"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    CowMovementRecord:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: integer
+        cow_id:
+          type: ["string", "null"]
+        site_label:
+          type: ["string", "null"]
+        moved_date:
+          type: ["string", "null"]
+        moved_month_year:
+          type: ["string", "null"]
+        from_location:
+          type: ["string", "null"]
+        to_location:
+          type: ["string", "null"]
+        from_latitude:
+          type: ["number", "null"]
+        from_longitude:
+          type: ["number", "null"]
+        to_latitude:
+          type: ["number", "null"]
+        to_longitude:
+          type: ["number", "null"]
+        distance:
+          type: ["number", "null"]
+        movement_type:
+          type: ["string", "null"]
+        region_from:
+          type: ["string", "null"]
+        region_to:
+          type: ["string", "null"]
+        vendor:
+          type: ["string", "null"]
+        raw_data:
+          type: object
+        synced_at:
+          type: ["string", "null"]
+
+    CowMovementPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CowMovementRecord"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer

@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Sheets → Supabase Sync Dashboard"
+version = "1.0.0"
+id = "artifacts/sync-dashboard"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18929
+
+[services.development]
+run = "pnpm --filter @workspace/sync-dashboard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/sync-dashboard", "run", "build" ]
+publicDir = "artifacts/sync-dashboard/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18929"
+BASE_PATH = "/"
