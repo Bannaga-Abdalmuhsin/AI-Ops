@@ -85,9 +85,16 @@ async function handleCallbackQuery(
   sessions.set(userId, { category });
 
   const label = CATEGORY_LABELS[category];
+
+  const examples: Record<Category, string> = {
+    cmdb: "Examples:\n• `COW001 current location`\n• `COW001 status`\n• `COW001 vendor and technology`\n• `COW001 deployment date`",
+    fuel: "Examples:\n• `COW001 fuel level`\n• `COW001 last fueling date`\n• `COW001 next fueling plan`\n• `COW001 power source`",
+    movement: "Examples:\n• `COW001 movement history`\n• `CWN104 last 3 movements`\n• `COW001 where was it moved from`",
+  };
+
   await bot.sendMessage(
     chatId,
-    `✅ You selected *${label}*.\n\nPlease type the COW site ID and what you'd like to know.\n\n_Example: COW001 current location_`,
+    `✅ You selected *${label}*.\n\nPlease type the COW site ID and what you'd like to know.\n\n${examples[category]}`,
     { parse_mode: "Markdown" }
   );
 }
