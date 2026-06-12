@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { setupWebhook } from "./lib/bot";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +23,13 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  const domain = process.env.REPLIT_DEV_DOMAIN;
+  if (domain) {
+    setupWebhook(domain).catch((e) =>
+      logger.error({ e }, "Webhook setup failed")
+    );
+  } else {
+    logger.warn("REPLIT_DEV_DOMAIN not set — Telegram webhook not registered");
+  }
 });
