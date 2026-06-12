@@ -24,12 +24,19 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
 
-  const domain = process.env.REPLIT_DEV_DOMAIN;
+  // In production REPLIT_DOMAINS holds the public .replit.app domain.
+  // In development fall back to REPLIT_DEV_DOMAIN.
+  const domain =
+    process.env.REPLIT_DOMAINS?.split(",")[0]?.trim() ??
+    process.env.REPLIT_DEV_DOMAIN;
+
   if (domain) {
     setupWebhook(domain).catch((e) =>
       logger.error({ e }, "Webhook setup failed")
     );
   } else {
-    logger.warn("REPLIT_DEV_DOMAIN not set — Telegram webhook not registered");
+    logger.warn(
+      "No domain available (REPLIT_DOMAINS / REPLIT_DEV_DOMAIN) — Telegram webhook not registered"
+    );
   }
 });
