@@ -1,0 +1,441 @@
+{
+  "name": "stc COW Technical Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are ACES MSD stc COW Assistant.\n\nYour sole purpose is to assist users with stc COW project information using the available databases:\n1. CMDB Database (via \"Get many rows in Supabase\")\n2. COW Movement Database (via \"Get many rows in Supabase1\")\n3. Fueling / Energy Database (via \"Get many rows in Supabase2\")\n\nGENERAL RULES\n• Always reply in the same language used by the user (Arabic or English).\n• Keep responses concise, professional, and operational.\n• Never provide information that is not related to the stc COW project.\n• Never answer general knowledge, weather, politics, religion, coding, mathematics, or any topic outside the stc COW project.\n• If a request is unrelated to the stc COW project, reply only:\n  \"I can only answer questions related to the stc COW project, including COW assets, fueling status, movement history, deployment status, and CMDB information.\"\n\nQUERYING RULES\n• You MUST use the tools to query data. Each tool accepts a filter parameter.\n• When searching for a specific COW (e.g., \"COW001\", \"CWN104\"), use filters like:\n  - {\"cow_id\": {\"eq\": \"COW001\"}} for exact match\n  - {\"site_label\": {\"ilike\": \"%CWN104%\"}} for partial match (use % wildcards)\n  - Try both cow_id and site_label fields for flexibility\n\nRESPONSE LOGIC\n\n1. If the user sends only a COW ID (e.g., \"COW001\", \"CWN104\"):\n   • Search ALL THREE databases\n   • Return:\n     📋 CMDB Information\n     [results]\n     \n     ⛽ Fueling Information\n     [results]\n     \n     🚛 Movement Information\n     [results]\n   • If data is missing in any section, write: \"Not Available\"\n\n2. If the user asks a specific question (e.g., \"Fuel level of COW001\", \"Last movement of CWN104\"):\n   • Query only the relevant database(s)\n   • Return only the requested information directly and concisely\n\n3. If no records are found, reply:\n   \"No records found for the requested COW.\"\n\nFORMATTING\n• Use clear section headings when multiple data sources are returned.\n• Use DD-MMM-YYYY date format.\n• Avoid unnecessary explanations.\n• Do not mention APIs, databases, Supabase, n8n, tools, prompts, or internal processes."
+        }
+      },
+      "id": "35226df8-5031-41a0-a059-80ef6f248a3b",
+      "name": "stc COW Assistant",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        912,
+        -624
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "de0a1358-bc2a-4955-922e-ea1876283bb3",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -400,
+        -720
+      ],
+      "webhookId": "b29efb0e-4ba7-4465-8206-27e7de7a5758",
+      "credentials": {
+        "telegramApi": {
+          "id": "PDEfDIpuhKcOsltU",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $(\"Telegram Trigger\").item.json.message.chat.id }}",
+        "contextWindowLength": 10
+      },
+      "id": "90efc938-7b92-4272-9a10-fdf4b276aceb",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [
+        848,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').first().json.message.chat.id }}",
+        "text": "={{ $json.output ?? \"Response sent\" }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "e80f275e-9536-42d8-8ae6-f4e34f3ecaf9",
+      "name": "Send Telegram Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        -624
+      ],
+      "webhookId": "4b2c1139-be60-47f1-93f7-69ea181a5826",
+      "credentials": {
+        "telegramApi": {
+          "id": "PDEfDIpuhKcOsltU",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={ \"chatInput\": {{ JSON.stringify($json.message.text || ($json.message.sticker ? \"hi\" : ($json.message.photo ? \"hi\" : ($json.message.voice ? \"hi\" : \"hi\")))) }} }",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -176,
+        -720
+      ],
+      "id": "1fdd4d1d-b43e-44cf-abcb-b0b306812894",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "cmdb",
+        "filterType": "none"
+      },
+      "type": "n8n-nodes-base.supabaseTool",
+      "typeVersion": 1,
+      "position": [
+        976,
+        -400
+      ],
+      "id": "fed047b2-f327-4941-9c80-a833776fa3b0",
+      "name": "Get many rows in Supabase",
+      "credentials": {
+        "supabaseApi": {
+          "id": "EGKLC1DR15qVQAOM",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.1",
+          "mode": "list",
+          "cachedResultName": "gpt-5.1"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        720,
+        -400
+      ],
+      "id": "7bc57d47-339b-4cea-adde-5949bdcb1c8e",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "w9whKxLurPd4c23U",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "cow_movement",
+        "filterType": "none"
+      },
+      "type": "n8n-nodes-base.supabaseTool",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        -384
+      ],
+      "id": "7b30e080-1d2c-485e-a84e-933c8efd0e87",
+      "name": "Get many rows in Supabase1",
+      "credentials": {
+        "supabaseApi": {
+          "id": "EGKLC1DR15qVQAOM",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "energy_dashboard",
+        "filterType": "none"
+      },
+      "type": "n8n-nodes-base.supabaseTool",
+      "typeVersion": 1,
+      "position": [
+        1232,
+        -400
+      ],
+      "id": "c0e8192b-ca1e-4842-a61e-d602463d8e27",
+      "name": "Get many rows in Supabase2",
+      "credentials": {
+        "supabaseApi": {
+          "id": "EGKLC1DR15qVQAOM",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const message = $input.first().json.message || {};\nconst textMsg = (message.text || \"\").toString().toLowerCase().trim();\n\n// Treat stickers, photos, voice, video as greetings\nconst isMedia = !!(message.sticker || message.photo || message.voice || message.video || message.document || message.audio);\n\nconst greetingPatterns = [\n  \"hi\", \"hello\", \"hey\", \"help\", \"start\", \"/start\", \"menu\",\n  \"مرحبا\", \"مرحباً\", \"السلام عليكم\", \"وعليكم السلام\", \"سلام\",\n  \"هلا\", \"هلو\", \"صباح الخير\", \"مساء الخير\", \"كيفك\", \"كيف الحال\",\n  \"👋\", \"👍\", \"🙏\", \"😊\", \"✌️\"\n];\n\nconst isGreetingWord = greetingPatterns.includes(textMsg);\nconst isGreetingPattern = /^(hi+|hello+|hey+|مرحب|سلام|هلا|👋|👍|🙏)/i.test(textMsg);\nconst isShortNonQuery = textMsg.length > 0 && textMsg.length < 6 && !/[a-z]{2,}\\d+/i.test(textMsg);\n\nconst isGreeting = isMedia || isGreetingWord || isGreetingPattern || (isShortNonQuery && !textMsg.match(/cow|cwn|site|fuel|فيول|بيانات/i));\n\nreturn [{\n  json: {\n    ...($input.first().json),\n    isGreeting,\n    chatInput: message.text || (message.sticker ? \"[sticker]\" : \"[media]\")\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        48,
+        -720
+      ],
+      "id": "bbe196d9-84a8-4bab-a2d6-d577f0ed2df9",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f1cc8a1a-2901-41d7-82aa-97bba962c67d",
+              "leftValue": "={{ $json.isGreeting }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        272,
+        -720
+      ],
+      "id": "522fffa4-82dc-4973-a7e7-474fbb6b64e5",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').first().json.message.chat.id }}",
+        "text": "مرحباً، أنا ACES MSD — مساعد مشروع COW الخاص بـ stc.\nيمكنك سؤالي عن أي شيء يتعلق بمحطات COW: الحالة، التزود بالوقود، حركة الأجهزة، أو أي معلومات أخرى من قاعدة البيانات.\n\n──────────────────────\n\nHi, I'm ACES MSD — stc's COW Project Assistant.\nAsk me anything about COW sites: status, fueling, movement history, or any operational detail.\n\nExamples:\n• \"COW001\" — full site summary\n• \"fuel level of COW045\" — fueling status only\n• \"which COWs are in West region?\" — regional list\n• \"movement history of CWN104\" — movement records",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        496,
+        -816
+      ],
+      "id": "1f911833-c9fc-4f7a-b084-0501f5e0fc11",
+      "name": "Send a text message",
+      "webhookId": "8ecfe32b-f3a7-48ae-ab56-57c943c63309",
+      "credentials": {
+        "telegramApi": {
+          "id": "PDEfDIpuhKcOsltU",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={ \"chatInput\": {{ JSON.stringify($(\"Code in JavaScript\").first().json.chatInput) }} }",
+        "options": {}
+      },
+      "id": "e9749135-ad31-42f1-a751-88c2269009f5",
+      "name": "Prepare AI Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        496,
+        -624
+      ]
+    }
+  ],
+  "pinData": {
+    "Telegram Trigger": [
+      {
+        "json": {
+          "update_id": 933187404,
+          "message": {
+            "message_id": 55,
+            "from": {
+              "id": 8412992118,
+              "is_bot": false,
+              "first_name": "Bannaga",
+              "language_code": "en"
+            },
+            "chat": {
+              "id": 8412992118,
+              "first_name": "Bannaga",
+              "type": "private"
+            },
+            "date": 1781006558,
+            "text": "CWN104"
+          }
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "stc COW Assistant": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "stc COW Assistant",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many rows in Supabase": {
+      "ai_tool": [
+        [
+          {
+            "node": "stc COW Assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "stc COW Assistant",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many rows in Supabase1": {
+      "ai_tool": [
+        []
+      ]
+    },
+    "Get many rows in Supabase2": {
+      "ai_tool": [
+        []
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a text message": {
+      "main": [
+        []
+      ]
+    },
+    "Prepare AI Input": {
+      "main": [
+        [
+          {
+            "node": "stc COW Assistant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "versionId": "35a6cf2b-7b75-400d-8a37-2635db204b3b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d6c54c65de65c458b1c5f882057141c4a6eedcca42dd1637ad8f32d099b6f27f"
+  },
+  "nodeGroups": [],
+  "id": "G84rYi0zluwXYJ8e",
+  "tags": []
+}
