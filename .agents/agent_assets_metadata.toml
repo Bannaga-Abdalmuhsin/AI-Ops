@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "fjR-iWLbiB7csY5lsdf3Q"
+uri = "file://attached_assets/stc_COW_Assistant_FIXED.json"
+type = "unspecified"
+title = "stc COW Assistant — Fixed Workflow"
