@@ -731,9 +731,33 @@ Use this same card format for every CMDB site ID lookup, every time, with no ext
 }
 
 export async function startPolling(): Promise<void> {
+  // In production (deployed), NODE_ENV=production is set by artifact.toml.
+  // If both dev and prod are running simultaneously they fight over the same
+  // token and Telegram returns 409.  Only poll in production; dev skips it.
+  if (process.env.NODE_ENV !== "production") {
+    logger.info(
+      "Telegram bot polling skipped in development — only runs in the deployed production server"
+    );
+    return;
+  }
+
   try {
     // Remove any lingering webhook so polling isn't blocked
     await bot.deleteWebHook({ drop_pending_updates: false });
+
+    // Gracefully handle 409 Conflict (another instance is running)
+    bot.on("polling_error", (err: Error & { code?: string }) => {
+      const msg = (err as Error).message ?? "";
+      if (msg.includes("409")) {
+        logger.warn(
+          "409 Conflict: another bot instance is already running — stopping this instance's polling"
+        );
+        bot.stopPolling().catch(() => undefined);
+      } else {
+        logger.error({ err }, "Telegram polling error");
+      }
+    });
+
     bot.on("message", (msg) => {
       handleMessage(msg).catch((err) =>
         logger.error({ err }, "handleMessage error")
