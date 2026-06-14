@@ -172,6 +172,27 @@ function buildDataPayload(
   };
 }
 
+// Fetch ALL movement records by paginating in parallel (Supabase caps at 1000/request).
+async function paginateAllMovements(
+  cowId?: string
+): Promise<Record<string, unknown>[]> {
+  const PAGE = 1000;
+  // Fetch pages 0, 1000, 2000 simultaneously — covers up to 3000 rows (table has 2,533)
+  const offsets = [0, 1000, 2000];
+  const pages = await Promise.all(
+    offsets.map((from) => {
+      let q = supabase
+        .from("cow_movement")
+        .select("moved_date, cow_id")
+        .range(from, from + PAGE - 1)
+        .order("moved_date", { ascending: true });
+      if (cowId) q = q.eq("cow_id", cowId) as typeof q;
+      return q;
+    })
+  );
+  return pages.flatMap((p) => (p.data ?? []) as Record<string, unknown>[]);
+}
+
 // Detect if the user is asking for a chart or visual.
 function detectChartRequest(query: string): boolean {
   const lower = query.toLowerCase();
@@ -266,23 +287,28 @@ async function answerQuery(
       tableContext =
         "CMDB infrastructure data. Fields: cow_id, site_label, region, district, city, location, site_status, vendor, technology, latitude, longitude, first_deploying_date, last_deploying_date.";
     } else {
-      let q = supabase
-        .from("cow_movement")
-        .select("*")
-        .order("moved_date", { ascending: false });
-      if (cowId) {
-        q = q.eq("cow_id", cowId).limit(10) as typeof q;
+      if (detectChartRequest(query)) {
+        // Chart path: fetch ALL records via pagination so year counts are accurate.
+        data = await paginateAllMovements(cowId);
       } else {
-        const { region } = extractTextFilters(query);
-        if (region) {
-          q = q.or(
-            `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
-          ) as typeof q;
+        let q = supabase
+          .from("cow_movement")
+          .select("*")
+          .order("moved_date", { ascending: false });
+        if (cowId) {
+          q = q.eq("cow_id", cowId).limit(10) as typeof q;
+        } else {
+          const { region } = extractTextFilters(query);
+          if (region) {
+            q = q.or(
+              `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
+            ) as typeof q;
+          }
+          q = q.limit(1000) as typeof q;
         }
-        q = q.limit(500) as typeof q;
+        const { data: rows } = await q;
+        data = rows ?? [];
       }
-      const { data: rows } = await q;
-      data = rows ?? [];
       tableContext =
         "COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance_km, region_from, region_to, vendor.";
     }
