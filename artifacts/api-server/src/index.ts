@@ -1,6 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { startPolling } from "./lib/bot";
+import { setupBot } from "./lib/bot";
 
 const rawPort = process.env["PORT"];
 
@@ -24,8 +24,13 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
 
-  // Long polling — no public URL required; works in both dev and production
-  startPolling().catch((e) =>
-    logger.error({ e }, "Telegram polling startup failed")
+  // In production REPLIT_DOMAINS holds the public .replit.app domain.
+  // setupBot registers the webhook in production and skips in dev.
+  const domain =
+    process.env.REPLIT_DOMAINS?.split(",")[0]?.trim() ??
+    process.env.REPLIT_DEV_DOMAIN;
+
+  setupBot(domain).catch((e) =>
+    logger.error({ e }, "Telegram bot setup failed")
   );
 });
