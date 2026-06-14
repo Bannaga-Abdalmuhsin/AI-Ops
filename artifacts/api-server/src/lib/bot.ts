@@ -15,8 +15,11 @@ const openai = new OpenAI({ apiKey: openaiKey });
 
 type Category = "cmdb" | "fuel" | "movement";
 
+const MAX_QUESTIONS = 3;
+
 interface UserSession {
   category: Category;
+  questionsUsed: number;
 }
 
 const sessions = new Map<number, UserSession>();
@@ -82,7 +85,7 @@ async function handleCallbackQuery(
 
   if (!chatId || !["cmdb", "fuel", "movement"].includes(category)) return;
 
-  sessions.set(userId, { category });
+  sessions.set(userId, { category, questionsUsed: 0 });
 
   const label = CATEGORY_LABELS[category];
 
@@ -138,7 +141,15 @@ async function answerQuery(
   query: string,
   category: Category
 ): Promise<void> {
-  sessions.delete(userId);
+  const session = sessions.get(userId);
+  const questionsUsed = (session?.questionsUsed ?? 0) + 1;
+  const remaining = MAX_QUESTIONS - questionsUsed;
+
+  if (remaining > 0) {
+    sessions.set(userId, { category, questionsUsed });
+  } else {
+    sessions.delete(userId);
+  }
 
   const cowMatch = query.match(/\b(COW\d+|CWN\d+)\b/i);
   const cowId = cowMatch?.[0]?.toUpperCase();
@@ -247,7 +258,21 @@ Reply in English only.`,
     answer = "⚠️ Could not generate a response. Please try again.";
   }
 
-  await bot.sendMessage(chatId, answer, { parse_mode: "Markdown" });
+  if (remaining > 0) {
+    const label = CATEGORY_LABELS[category];
+    const footer =
+      `\n\n─────────────────\n` +
+      `📂 *${label}* session — question ${questionsUsed} of ${MAX_QUESTIONS}\n` +
+      `You have *${remaining}* question${remaining > 1 ? "s" : ""} remaining in this session.`;
+    await bot.sendMessage(chatId, answer + footer, { parse_mode: "Markdown" });
+  } else {
+    await bot.sendMessage(chatId, answer, { parse_mode: "Markdown" });
+    await bot.sendMessage(
+      chatId,
+      `✅ You've used all *${MAX_QUESTIONS}* questions for this session.\n\nSelect a database to start a new session:`,
+      { parse_mode: "Markdown", reply_markup: MAIN_KEYBOARD }
+    );
+  }
 }
 
 export async function setupWebhook(domain: string): Promise<void> {
