@@ -293,6 +293,17 @@ function detectOnAirDaysQuery(query: string): boolean {
   );
 }
 
+function detectCountQuery(query: string): boolean {
+  const lower = query.toLowerCase();
+  return (
+    lower.includes("how many") ||
+    lower.startsWith("total ") ||
+    lower.includes(" total ") ||
+    lower.includes("count of") ||
+    lower.includes("number of")
+  );
+}
+
 function detectNeverMovedQuery(query: string): boolean {
   const lower = query.toLowerCase();
   return (
@@ -435,6 +446,27 @@ async function answerQuery(
 
   // ── Analytics fast-paths (movement only — no GPT needed) ─────────────────
   if (category === "movement") {
+    // 0. Exact count queries — use Supabase count API, no row fetch, no limit cap
+    if (!cowId && detectCountQuery(query)) {
+      const { region } = extractTextFilters(query);
+      let q = supabase
+        .from("cow_movement")
+        .select("*", { count: "exact", head: true });
+      if (region) {
+        q = q.or(
+          `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
+        ) as typeof q;
+      }
+      const { count } = await q;
+      const regionLabel = region ? `*${region}* region` : "all regions";
+      await bot.sendMessage(
+        chatId,
+        `📊 Total movements in ${regionLabel}: *${(count ?? 0).toLocaleString()}*`,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+
     // 1. Never-moved COWs
     if (detectNeverMovedQuery(query)) {
       const [{ data: cmdbRows }, allMoves] = await Promise.all([
@@ -617,6 +649,7 @@ The dataset provided already reflects any region/status filters applied.
 When the user asks for a count, use the "Total matching records" number if provided — do NOT recount the sample.
 Format all dates as DD-MMM-YYYY.
 Never mention Supabase, APIs, N8N, or any technical tools.
+Never say "based on the dataset", "from the dataset provided", "from the sample", "as determined from", or any similar phrase referencing how the data was obtained. State facts directly.
 Reply in English only.
 
 MOVEMENT HISTORY FORMAT RULE:
