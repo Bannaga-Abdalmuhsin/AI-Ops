@@ -720,8 +720,11 @@ Use this same card format for every CMDB site ID lookup, every time, with no ext
     answer =
       completion.choices[0]?.message?.content ?? "No response generated.";
   } catch (err) {
-    logger.error({ err }, "OpenAI call error");
-    answer = "⚠️ Could not generate a response. Please try again.";
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const errStatus = (err as Record<string, unknown>)?.status ?? "unknown";
+    const errType = (err as Record<string, unknown>)?.type ?? "unknown";
+    logger.error({ errMsg, errStatus, errType }, "OpenAI call error");
+    answer = `⚠️ Could not generate a response (${errMsg}). Please try again.`;
   }
 
   await bot.sendMessage(chatId, answer, {
