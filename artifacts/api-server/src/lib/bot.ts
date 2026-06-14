@@ -16,7 +16,7 @@ const openaiKey = process.env.OPENAI_API_KEY;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required");
 if (!openaiKey) throw new Error("OPENAI_API_KEY is required");
 
-export const bot = new TelegramBot(token);
+export const bot = new TelegramBot(token, { polling: false });
 
 const openai = new OpenAI({ apiKey: openaiKey });
 
@@ -730,12 +730,23 @@ Use this same card format for every CMDB site ID lookup, every time, with no ext
   });
 }
 
-export async function setupWebhook(domain: string): Promise<void> {
-  const webhookUrl = `https://${domain}/api/telegram/webhook`;
+export async function startPolling(): Promise<void> {
   try {
-    await bot.setWebHook(webhookUrl);
-    logger.info({ webhookUrl }, "Telegram webhook registered");
+    // Remove any lingering webhook so polling isn't blocked
+    await bot.deleteWebHook({ drop_pending_updates: false });
+    bot.on("message", (msg) => {
+      handleMessage(msg).catch((err) =>
+        logger.error({ err }, "handleMessage error")
+      );
+    });
+    bot.on("callback_query", (query) => {
+      handleCallbackQuery(query).catch((err) =>
+        logger.error({ err }, "handleCallbackQuery error")
+      );
+    });
+    await bot.startPolling({ restart: false });
+    logger.info("Telegram bot started (long polling)");
   } catch (err) {
-    logger.error({ err }, "Failed to set Telegram webhook");
+    logger.error({ err }, "Failed to start Telegram bot polling");
   }
 }

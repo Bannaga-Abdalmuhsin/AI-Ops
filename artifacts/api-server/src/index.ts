@@ -1,6 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { setupWebhook } from "./lib/bot";
+import { startPolling } from "./lib/bot";
 
 const rawPort = process.env["PORT"];
 
@@ -24,19 +24,8 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
 
-  // In production REPLIT_DOMAINS holds the public .replit.app domain.
-  // In development fall back to REPLIT_DEV_DOMAIN.
-  const domain =
-    process.env.REPLIT_DOMAINS?.split(",")[0]?.trim() ??
-    process.env.REPLIT_DEV_DOMAIN;
-
-  if (domain) {
-    setupWebhook(domain).catch((e) =>
-      logger.error({ e }, "Webhook setup failed")
-    );
-  } else {
-    logger.warn(
-      "No domain available (REPLIT_DOMAINS / REPLIT_DEV_DOMAIN) — Telegram webhook not registered"
-    );
-  }
+  // Long polling — no public URL required; works in both dev and production
+  startPolling().catch((e) =>
+    logger.error({ e }, "Telegram polling startup failed")
+  );
 });
