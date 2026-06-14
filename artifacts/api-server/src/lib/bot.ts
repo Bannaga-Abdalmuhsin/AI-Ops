@@ -99,6 +99,39 @@ async function handleCallbackQuery(
   );
 }
 
+// Extract region and status keywords from free-text queries for aggregate filtering.
+function extractTextFilters(q: string): { region?: string; status?: string } {
+  const lower = q.toLowerCase();
+
+  const REGIONS = [
+    "central", "western", "eastern", "northern", "southern",
+    "riyadh", "makkah", "madinah", "medina", "jeddah",
+    "tabuk", "qassim", "hail", "najran", "jizan", "asir", "baha",
+  ];
+  const region = REGIONS.find((r) => lower.includes(r));
+
+  let status: string | undefined;
+  if (lower.match(/on[\s-]?air/)) status = "On-Air";
+  else if (lower.match(/off[\s-]?air/)) status = "Off-Air";
+
+  return { region, status };
+}
+
+// Build a concise data payload for GPT: all rows when small, count + sample when large.
+function buildDataPayload(
+  rows: Record<string, unknown>[]
+): { payload: string; totalCount: number } {
+  const totalCount = rows.length;
+  if (totalCount <= 50) {
+    return { payload: JSON.stringify(rows, null, 2), totalCount };
+  }
+  const sample = rows.slice(0, 30);
+  return {
+    payload: `Total matching records: ${totalCount}\n\nSample (first 30 of ${totalCount}):\n${JSON.stringify(sample, null, 2)}`,
+    totalCount,
+  };
+}
+
 async function answerQuery(
   chatId: number,
   userId: number,
@@ -117,29 +150,50 @@ async function answerQuery(
 
   try {
     if (category === "cmdb") {
-      const base = supabase.from("cmdb").select("*");
-      const { data: rows } = await (cowId
-        ? base.eq("cow_id", cowId).limit(5)
-        : base.limit(20));
+      let q = supabase.from("cmdb").select("*");
+      if (cowId) {
+        q = q.eq("cow_id", cowId).limit(10) as typeof q;
+      } else {
+        const { region, status } = extractTextFilters(query);
+        if (region) q = q.ilike("region", `%${region}%`) as typeof q;
+        if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
+        q = q.limit(1000) as typeof q;
+      }
+      const { data: rows } = await q;
       data = rows ?? [];
       tableContext =
         "CMDB infrastructure data. Fields: cow_id, site_label, region, district, city, location, site_status, vendor, technology, latitude, longitude, first_deploying_date, last_deploying_date.";
     } else if (category === "fuel") {
-      const base = supabase.from("energy_dashboard").select("*");
-      const { data: rows } = await (cowId
-        ? base.eq("site", cowId).limit(5)
-        : base.limit(20));
+      let q = supabase.from("energy_dashboard").select("*");
+      if (cowId) {
+        q = q.eq("site", cowId).limit(10) as typeof q;
+      } else {
+        const { region, status } = extractTextFilters(query);
+        if (region) q = q.ilike("region_name", `%${region}%`) as typeof q;
+        if (status) q = q.ilike("cow_status", `%${status}%`) as typeof q;
+        q = q.limit(1000) as typeof q;
+      }
+      const { data: rows } = await q;
       data = rows ?? [];
       tableContext =
         "Fueling and energy data. The COW ID is in the 'site' field. Fields: site, cow_status, region_name, fuel_tank_level_pct, last_fueling_date, last_fueling_qty, next_fueling_plan, tank_capacity, power_source, total_on_air_days.";
     } else {
-      const base = supabase
+      let q = supabase
         .from("cow_movement")
         .select("*")
         .order("moved_date", { ascending: false });
-      const { data: rows } = await (cowId
-        ? base.eq("cow_id", cowId).limit(10)
-        : base.limit(20));
+      if (cowId) {
+        q = q.eq("cow_id", cowId).limit(10) as typeof q;
+      } else {
+        const { region } = extractTextFilters(query);
+        if (region) {
+          q = q.or(
+            `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
+          ) as typeof q;
+        }
+        q = q.limit(500) as typeof q;
+      }
+      const { data: rows } = await q;
       data = rows ?? [];
       tableContext =
         "COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance_km, region_from, region_to, vendor.";
@@ -153,11 +207,13 @@ async function answerQuery(
       chatId,
       cowId
         ? `❌ No records found for *${cowId}* in the ${CATEGORY_LABELS[category]} database.\n\nPlease check the site ID and try again.`
-        : `❌ No matching records found. Please include a COW site ID (e.g. *COW001* or *CWN104*) in your query.`,
+        : `❌ No matching records found for your query. Try rephrasing or check the filters (region, status, etc.).`,
       { parse_mode: "Markdown" }
     );
     return;
   }
+
+  const { payload: dataPayload, totalCount } = buildDataPayload(data);
 
   let answer = "";
   try {
@@ -170,6 +226,8 @@ async function answerQuery(
 Answer ONLY what the user asked. Be concise and precise.
 Use emoji section headers to format your answer clearly.
 You have been given ${tableContext}
+The dataset provided already reflects any region/status filters applied.
+When the user asks for a count, use the "Total matching records" number if provided — do NOT recount the sample.
 Format all dates as DD-MMM-YYYY.
 For fuel_tank_level_pct below 20% add ⚠️ LOW after the value. Below 10% add 🔴 CRITICAL.
 Never mention Supabase, APIs, N8N, or any technical tools.
@@ -177,10 +235,10 @@ Reply in English only.`,
         },
         {
           role: "user",
-          content: `Database records:\n${JSON.stringify(data, null, 2)}\n\nUser question: ${query}`,
+          content: `Database records (total fetched: ${totalCount}):\n${dataPayload}\n\nUser question: ${query}`,
         },
       ],
-      max_tokens: 600,
+      max_tokens: 800,
     });
     answer =
       completion.choices[0]?.message?.content ?? "No response generated.";
