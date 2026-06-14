@@ -586,16 +586,22 @@ async function answerQuery(
       }
       tableContext = `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.
 
-SAUDI EVENTS CONTEXT — use when explaining movement spikes or seasonal patterns:
-• Hajj: Annual Islamic pilgrimage (Dhul-Hijjah, shifts yearly) — massive COW demand, WEST/CENTRAL regions (Makkah, Madinah, Mina, Arafat).
-• Umrah: Year-round pilgrimage — continuous demand, WEST region.
-• Riyadh Season: Oct–Mar — large entertainment events, CENTRAL region.
-• National Day: Sep 23 — events across all regions.
-• Founding Day: Feb 22 — events across all regions.
-• Ramadan: Annual (Islamic calendar) — increased network demand everywhere.
-• Janadriyah Festival: Feb–Mar — cultural events, CENTRAL.
-• Formula E / Formula 1: Varies — usually Riyadh/Jeddah (CENTRAL/WEST).
-When movement spikes occur in a specific month or region, reference these events as likely drivers.`;
+REGIONAL QUERY RULE:
+When the user asks about movements in a region (e.g. "west region movement"), summarize the actual records provided:
+- Total movements in the region
+- Movement type breakdown (Full / Half / Zero counts)
+- Top 5 destination locations by frequency
+- Date range covered
+Do NOT explain Saudi events unless the user explicitly asks about patterns, spikes, or reasons.
+
+SAUDI EVENTS CONTEXT — use ONLY when the user asks about patterns, spikes, or reasons for movement peaks:
+• Hajj: Annual Islamic pilgrimage (Dhul-Hijjah, shifts yearly) — WEST/CENTRAL regions.
+• Umrah: Year-round — WEST region.
+• Riyadh Season: Oct–Mar — CENTRAL region.
+• National Day: Sep 23 | Founding Day: Feb 22 — all regions.
+• Ramadan: Annual — all regions.
+• Janadriyah: Feb–Mar — CENTRAL.
+• Formula E/F1: Varies — Riyadh/Jeddah.`;
     }
   } catch (err) {
     logger.error({ err }, "Supabase query error");
