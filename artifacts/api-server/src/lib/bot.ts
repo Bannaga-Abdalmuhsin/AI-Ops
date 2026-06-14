@@ -2,6 +2,13 @@ import TelegramBot from "node-telegram-bot-api";
 import OpenAI from "openai";
 import { supabase } from "./supabase.js";
 import { logger } from "./logger.js";
+import {
+  type Movement,
+  analyzeWarehouseIdle,
+  getWarehouseAgingBuckets,
+  getTopDestinations,
+  getNeverMovedCows,
+} from "./movement-analytics.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -173,7 +180,7 @@ async function handleCallbackQuery(
 
   const examples: Record<Category, string> = {
     cmdb: "Examples:\n• `COW001 current location`\n• `COW001 status`\n• `COW001 vendor and technology`\n• `COW001 deployment date`\n• `how many on-air in Central region`",
-    movement: "Examples:\n• `COW001 movement history`\n• `CWN104 last 3 movements`\n• `COW001 where was it moved from`\n• `how many movements in Western region`",
+    movement: "Examples:\n• `COW001 movement history`\n• `CWN104 last 3 movements`\n• `never moved COWs`\n• `warehouse aging analysis`\n• `top events breakdown`\n• `bar chart by year`\n• `how many movements in Western region`",
   };
 
   await bot.sendMessage(
@@ -217,11 +224,11 @@ function buildDataPayload(
 }
 
 // Fetch ALL movement records by paginating in parallel (Supabase caps at 1000/request).
+// Lightweight version (date + id only) — used for year-chart aggregation.
 async function paginateAllMovements(
   cowId?: string
 ): Promise<Record<string, unknown>[]> {
   const PAGE = 1000;
-  // Fetch pages 0, 1000, 2000 simultaneously — covers up to 3000 rows (table has 2,533)
   const offsets = [0, 1000, 2000];
   const pages = await Promise.all(
     offsets.map((from) => {
@@ -237,6 +244,24 @@ async function paginateAllMovements(
   return pages.flatMap((p) => (p.data ?? []) as Record<string, unknown>[]);
 }
 
+// Full movement records (all analytics fields) — used for warehouse/events analysis.
+async function paginateAllMovementsFull(): Promise<Movement[]> {
+  const PAGE = 1000;
+  const offsets = [0, 1000, 2000];
+  const pages = await Promise.all(
+    offsets.map((from) =>
+      supabase
+        .from("cow_movement")
+        .select(
+          "cow_id, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor"
+        )
+        .range(from, from + PAGE - 1)
+        .order("moved_date", { ascending: true })
+    )
+  );
+  return pages.flatMap((p) => (p.data ?? []) as Movement[]);
+}
+
 // Detect if the user is asking for a chart or visual.
 function detectChartRequest(query: string): boolean {
   const lower = query.toLowerCase();
@@ -250,6 +275,55 @@ function detectChartRequest(query: string): boolean {
     lower.includes("yearly") ||
     lower.includes("annually") ||
     lower.includes("each year")
+  );
+}
+
+function detectNeverMovedQuery(query: string): boolean {
+  const lower = query.toLowerCase();
+  return (
+    lower.includes("never moved") ||
+    lower.includes("never-moved") ||
+    lower.includes("static cow") ||
+    lower.includes("no movement") ||
+    lower.includes("didn't move") ||
+    lower.includes("did not move") ||
+    lower.includes("zero movement") ||
+    lower.includes("not moved") ||
+    lower.includes("never deployed")
+  );
+}
+
+function detectWarehouseIdleQuery(query: string): boolean {
+  const lower = query.toLowerCase();
+  return (
+    lower.includes("warehouse aging") ||
+    lower.includes("aging analysis") ||
+    lower.includes("hub time") ||
+    lower.includes("idle warehouse") ||
+    lower.includes("warehouse idle") ||
+    (lower.includes("idle") && lower.includes("warehouse")) ||
+    (lower.includes("how long") && lower.includes("warehouse")) ||
+    lower.includes("off-air aging") ||
+    lower.includes("offair aging")
+  );
+}
+
+function detectTopEventsQuery(query: string): boolean {
+  const lower = query.toLowerCase();
+  return (
+    lower.includes("top event") ||
+    lower.includes("which event") ||
+    lower.includes("event breakdown") ||
+    lower.includes("top destination") ||
+    lower.includes("top location") ||
+    lower.includes("most visited") ||
+    lower.includes("most deployed") ||
+    lower.includes("hajj") ||
+    lower.includes("riyadh season") ||
+    lower.includes("formula") ||
+    lower.includes("national day") ||
+    lower.includes("by event") ||
+    lower.includes("per event")
   );
 }
 
@@ -312,6 +386,84 @@ async function answerQuery(
 
   await bot.sendChatAction(chatId, "typing");
 
+  // ── Analytics fast-paths (movement only — no GPT needed) ─────────────────
+  if (category === "movement") {
+    // 1. Never-moved COWs
+    if (detectNeverMovedQuery(query)) {
+      const [{ data: cmdbRows }, allMoves] = await Promise.all([
+        supabase.from("cmdb").select("cow_id").limit(1000),
+        paginateAllMovements(),
+      ]);
+      const cmdbIds = (cmdbRows ?? []).map((r) => r.cow_id as string).filter(Boolean);
+      const movedIds = new Set(allMoves.map((m) => m.cow_id as string).filter(Boolean));
+      const neverMoved = getNeverMovedCows(cmdbIds, movedIds);
+      const neverCount = neverMoved.length;
+      const movedCount = cmdbIds.length - neverCount;
+      const preview = neverMoved.slice(0, 20).join(", ");
+      const extra = neverCount > 20 ? `\n_…and ${neverCount - 20} more_` : "";
+      await bot.sendMessage(
+        chatId,
+        `📊 *COW Movement Status*\n\n• Total COWs in CMDB: *${cmdbIds.length}*\n• COWs with movement history: *${movedCount}*\n• COWs that never moved: *${neverCount}*\n\n${
+          neverCount > 0
+            ? `*Never-moved COW IDs (first 20):*\n${preview}${extra}`
+            : "✅ All COWs have at least one movement record."
+        }`,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+
+    // 2. Warehouse idle / aging analysis
+    if (detectWarehouseIdleQuery(query)) {
+      const allMoves = await paginateAllMovementsFull();
+      const idleResults = analyzeWarehouseIdle(allMoves);
+      const agingBuckets = getWarehouseAgingBuckets(allMoves);
+
+      const top = idleResults.slice(0, 10);
+      const whLines =
+        top.length > 0
+          ? top.map(
+              (r, i) =>
+                `${i + 1}. *${r.warehouse}*\n   Avg idle: ${r.avgIdleDays} days | COWs: ${r.totalCows} | Total: ${r.totalIdleDays} days`
+            )
+          : ["No warehouse idle data found."];
+
+      const bucketLines = agingBuckets
+        .filter((b) => b.count > 0)
+        .map((b) => `• ${b.bucket}: *${b.count}* COWs`);
+
+      await bot.sendMessage(
+        chatId,
+        `🏭 *Warehouse Idle Analysis*\n_(Avg days COWs sit between movements)_\n\n${whLines.join(
+          "\n"
+        )}\n\n⏳ *Off-Air Aging Buckets* _(Half/Zero movement type)_\n${
+          bucketLines.length > 0 ? bucketLines.join("\n") : "No off-air data."
+        }`,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+
+    // 3. Top events / deployment destinations
+    if (detectTopEventsQuery(query)) {
+      const allMoves = await paginateAllMovementsFull();
+      const topDests = getTopDestinations(allMoves, 15);
+      const lines = topDests.map(
+        (d, i) =>
+          `${i + 1}. *${d.location}*\n   Movements: ${d.movementCount} | Unique COWs: ${d.uniqueCows}`
+      );
+      await bot.sendMessage(
+        chatId,
+        `🎯 *Top Deployment Destinations*\n_(Locations receiving the most COW movements)_\n\n${lines.join(
+          "\n"
+        )}\n\n💡 _High-count destinations often correspond to major Saudi events — Hajj, Riyadh Season, National Day, Formula 1, Janadriyah, etc._`,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   let data: Record<string, unknown>[] = [];
   let tableContext = "";
 
@@ -353,8 +505,18 @@ async function answerQuery(
         const { data: rows } = await q;
         data = rows ?? [];
       }
-      tableContext =
-        "COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance_km, region_from, region_to, vendor.";
+      tableContext = `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.
+
+SAUDI EVENTS CONTEXT — use when explaining movement spikes or seasonal patterns:
+• Hajj: Annual Islamic pilgrimage (Dhul-Hijjah, shifts yearly) — massive COW demand, WEST/CENTRAL regions (Makkah, Madinah, Mina, Arafat).
+• Umrah: Year-round pilgrimage — continuous demand, WEST region.
+• Riyadh Season: Oct–Mar — large entertainment events, CENTRAL region.
+• National Day: Sep 23 — events across all regions.
+• Founding Day: Feb 22 — events across all regions.
+• Ramadan: Annual (Islamic calendar) — increased network demand everywhere.
+• Janadriyah Festival: Feb–Mar — cultural events, CENTRAL.
+• Formula E / Formula 1: Varies — usually Riyadh/Jeddah (CENTRAL/WEST).
+When movement spikes occur in a specific month or region, reference these events as likely drivers.`;
     }
   } catch (err) {
     logger.error({ err }, "Supabase query error");
