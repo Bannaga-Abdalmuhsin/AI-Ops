@@ -191,15 +191,29 @@ async function handleCallbackQuery(
 }
 
 // Extract region and status keywords from free-text queries for aggregate filtering.
+// Region is normalised to its DB root so ilike.%root% matches WEST / Western / Western Region.
 function extractTextFilters(q: string): { region?: string; status?: string } {
   const lower = q.toLowerCase();
 
-  const REGIONS = [
-    "central", "western", "eastern", "northern", "southern",
-    "riyadh", "makkah", "madinah", "medina", "jeddah",
-    "tabuk", "qassim", "hail", "najran", "jizan", "asir", "baha",
+  const REGION_MAP: [string, string][] = [
+    ["western", "west"], ["west", "west"],
+    ["eastern", "east"], ["east", "east"],
+    ["central", "central"],
+    ["northern", "north"], ["north", "north"],
+    ["southern", "south"], ["south", "south"],
+    ["riyadh", "riyadh"],
+    ["makkah", "makkah"], ["mecca", "makkah"],
+    ["madinah", "madinah"], ["medina", "madinah"],
+    ["jeddah", "jeddah"], ["jedda", "jeddah"],
+    ["tabuk", "tabuk"], ["qassim", "qassim"],
+    ["hail", "hail"], ["najran", "najran"],
+    ["jizan", "jizan"], ["asir", "asir"], ["baha", "baha"],
   ];
-  const region = REGIONS.find((r) => lower.includes(r));
+
+  let region: string | undefined;
+  for (const [term, pattern] of REGION_MAP) {
+    if (lower.includes(term)) { region = pattern; break; }
+  }
 
   let status: string | undefined;
   if (lower.match(/on[\s-]?air/)) status = "On-Air";
