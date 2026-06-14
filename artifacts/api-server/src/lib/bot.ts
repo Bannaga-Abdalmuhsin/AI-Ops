@@ -492,7 +492,7 @@ async function answerQuery(
           .select("*")
           .order("moved_date", { ascending: false });
         if (cowId) {
-          q = q.eq("cow_id", cowId).limit(10) as typeof q;
+          q = q.eq("cow_id", cowId).limit(200) as typeof q;
         } else {
           const { region } = extractTextFilters(query);
           if (region) {
@@ -571,6 +571,16 @@ When the user asks for a count, use the "Total matching records" number if provi
 Format all dates as DD-MMM-YYYY.
 Never mention Supabase, APIs, N8N, or any technical tools.
 Reply in English only.
+
+MOVEMENT HISTORY FORMAT RULE:
+When listing movement history for a COW, use this compact one-line format per move — no extra commentary:
+Total: <N> movements
+
+[1] DD-MMM-YYYY | <from_location> → <to_location> | <distance> km | <movement_type>
+[2] DD-MMM-YYYY | <from_location> → <to_location> | <distance> km | <movement_type>
+...
+
+Sort oldest-first. Do NOT add explanations, headers, or blank lines between rows.
 
 CMDB SITE ID LOOKUP RULE:
 When the user's message is just a site ID (e.g. "COW001" or "CWN104") with no other question, always reply with a full info card using EXACTLY this format (replace values with actual data):
