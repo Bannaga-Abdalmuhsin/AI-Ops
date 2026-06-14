@@ -172,6 +172,70 @@ function buildDataPayload(
   };
 }
 
+// Detect if the user is asking for a chart or visual.
+function detectChartRequest(query: string): boolean {
+  const lower = query.toLowerCase();
+  return (
+    lower.includes("chart") ||
+    lower.includes("graph") ||
+    lower.includes("bar") ||
+    lower.includes("visual") ||
+    lower.includes("by year") ||
+    lower.includes("per year") ||
+    lower.includes("yearly") ||
+    lower.includes("annually") ||
+    lower.includes("each year")
+  );
+}
+
+// Count movement records grouped by year (from moved_date).
+function aggregateMovementsByYear(
+  data: Record<string, unknown>[]
+): { labels: string[]; values: number[] } {
+  const counts: Record<string, number> = {};
+  for (const row of data) {
+    const dateStr = row.moved_date as string | undefined;
+    if (dateStr) {
+      const year = String(new Date(dateStr).getFullYear());
+      if (year !== "NaN") counts[year] = (counts[year] ?? 0) + 1;
+    }
+  }
+  const sorted = Object.keys(counts).sort();
+  return { labels: sorted, values: sorted.map((y) => counts[y]!) };
+}
+
+// Build a QuickChart.io bar-chart URL that resolves to a PNG image.
+function buildBarChartUrl(
+  labels: string[],
+  values: number[],
+  title: string
+): string {
+  const config = {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Movements",
+          data: values,
+          backgroundColor: "rgba(54, 162, 235, 0.85)",
+          borderColor: "rgba(54, 162, 235, 1)",
+          borderWidth: 1,
+        },
+      ],
+    },
+    options: {
+      plugins: {
+        title: { display: true, text: title, font: { size: 16 } },
+        legend: { display: false },
+      },
+      scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+    },
+  };
+  const encoded = encodeURIComponent(JSON.stringify(config));
+  return `https://quickchart.io/chart?c=${encoded}&w=700&h=420&bkg=white`;
+}
+
 async function answerQuery(
   chatId: number,
   userId: number,
@@ -235,6 +299,27 @@ async function answerQuery(
       { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
     );
     return;
+  }
+
+  // Chart fast-path: movement by year — no GPT call needed.
+  if (category === "movement" && detectChartRequest(query)) {
+    const { labels, values } = aggregateMovementsByYear(data);
+    if (labels.length > 0) {
+      const title = cowId
+        ? `Movements by Year — ${cowId}`
+        : "Total COW Movements by Year";
+      const chartUrl = buildBarChartUrl(labels, values, title);
+      const total = values.reduce((s, v) => s + v, 0);
+      const lines = labels.map((l, i) => `• ${l}: *${values[i]}* movements`);
+      await bot.sendPhoto(chatId, chartUrl, {
+        caption:
+          `📊 *${title}*\n\nTotal: *${total}* movements\n\n` +
+          lines.join("\n"),
+        parse_mode: "Markdown",
+        reply_markup: continueKeyboard(category),
+      });
+      return;
+    }
   }
 
   const { payload: dataPayload, totalCount } = buildDataPayload(data);
