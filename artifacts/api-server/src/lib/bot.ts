@@ -13,6 +13,16 @@ export const bot = new TelegramBot(token);
 
 const openai = new OpenAI({ apiKey: openaiKey });
 
+// --- Access control ---------------------------------------------------------
+const BOT_PASSWORD = process.env.BOT_PASSWORD ?? "";
+if (!BOT_PASSWORD) {
+  logger.warn("BOT_PASSWORD not set — bot is unprotected");
+}
+
+// Users who have successfully entered the password this server session.
+const authenticatedUsers = new Set<number>();
+// ---------------------------------------------------------------------------
+
 type Category = "cmdb" | "movement";
 
 interface UserSession {
@@ -67,6 +77,29 @@ async function handleMessage(msg: TelegramBot.Message): Promise<void> {
   const userId = msg.from?.id ?? chatId;
   const text = (msg.text ?? "").trim();
 
+  // ── Auth gate ──────────────────────────────────────────────────────────
+  if (!authenticatedUsers.has(userId)) {
+    if (BOT_PASSWORD && text === BOT_PASSWORD) {
+      authenticatedUsers.add(userId);
+      await bot.sendMessage(
+        chatId,
+        `✅ *Access granted!* Welcome to ACES MSD.\n\n${GREETING}`,
+        { parse_mode: "Markdown", reply_markup: MAIN_KEYBOARD }
+      );
+    } else {
+      const wrongAttempt = text.length > 0;
+      await bot.sendMessage(
+        chatId,
+        wrongAttempt
+          ? "❌ *Incorrect password.* Please try again:"
+          : "🔒 *This bot is protected.*\n\nPlease enter the access password to continue:",
+        { parse_mode: "Markdown" }
+      );
+    }
+    return;
+  }
+  // ──────────────────────────────────────────────────────────────────────
+
   const session = sessions.get(userId);
 
   if (session && text.length > 0) {
@@ -90,6 +123,17 @@ async function handleCallbackQuery(
   await bot.answerCallbackQuery(query.id);
 
   if (!chatId) return;
+
+  // ── Auth gate ──────────────────────────────────────────────────────────
+  if (!authenticatedUsers.has(userId)) {
+    await bot.sendMessage(
+      chatId,
+      "🔒 *This bot is protected.*\n\nPlease enter the access password to continue:",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  // ──────────────────────────────────────────────────────────────────────
 
   // Handle navigation actions
   if (data === "main_menu") {
