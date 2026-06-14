@@ -13,13 +13,10 @@ export const bot = new TelegramBot(token);
 
 const openai = new OpenAI({ apiKey: openaiKey });
 
-type Category = "cmdb" | "fuel" | "movement";
-
-const MAX_QUESTIONS = 3;
+type Category = "cmdb" | "movement";
 
 interface UserSession {
   category: Category;
-  questionsUsed: number;
 }
 
 const sessions = new Map<number, UserSession>();
@@ -30,7 +27,6 @@ Select a database to query:`;
 
 const CATEGORY_LABELS: Record<Category, string> = {
   cmdb: "📋 CMDB",
-  fuel: "⛽ Fueling Status",
   movement: "🚛 COW Movement History",
 };
 
@@ -38,11 +34,21 @@ const MAIN_KEYBOARD: TelegramBot.InlineKeyboardMarkup = {
   inline_keyboard: [
     [
       { text: "📋 CMDB", callback_data: "cmdb" },
-      { text: "⛽ Fueling Status", callback_data: "fuel" },
       { text: "🚛 COW Movement", callback_data: "movement" },
     ],
   ],
 };
+
+function continueKeyboard(category: Category): TelegramBot.InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [
+        { text: `🔄 Next question (${CATEGORY_LABELS[category]})`, callback_data: "continue" },
+        { text: "🏠 Select another database", callback_data: "main_menu" },
+      ],
+    ],
+  };
+}
 
 export async function handleUpdate(update: TelegramBot.Update): Promise<void> {
   try {
@@ -79,20 +85,51 @@ async function handleCallbackQuery(
 ): Promise<void> {
   const chatId = query.message?.chat.id;
   const userId = query.from.id;
-  const category = query.data as Category;
+  const data = query.data;
 
   await bot.answerCallbackQuery(query.id);
 
-  if (!chatId || !["cmdb", "fuel", "movement"].includes(category)) return;
+  if (!chatId) return;
 
-  sessions.set(userId, { category, questionsUsed: 0 });
+  // Handle navigation actions
+  if (data === "main_menu") {
+    sessions.delete(userId);
+    await bot.sendMessage(chatId, GREETING, {
+      parse_mode: "Markdown",
+      reply_markup: MAIN_KEYBOARD,
+    });
+    return;
+  }
+
+  if (data === "continue") {
+    const session = sessions.get(userId);
+    if (!session) {
+      await bot.sendMessage(chatId, GREETING, {
+        parse_mode: "Markdown",
+        reply_markup: MAIN_KEYBOARD,
+      });
+      return;
+    }
+    const label = CATEGORY_LABELS[session.category];
+    await bot.sendMessage(
+      chatId,
+      `📂 *${label}* — go ahead, type your next question:`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  // Handle category selection
+  const category = data as Category;
+  if (!["cmdb", "movement"].includes(category)) return;
+
+  sessions.set(userId, { category });
 
   const label = CATEGORY_LABELS[category];
 
   const examples: Record<Category, string> = {
-    cmdb: "Examples:\n• `COW001 current location`\n• `COW001 status`\n• `COW001 vendor and technology`\n• `COW001 deployment date`",
-    fuel: "Examples:\n• `COW001 fuel level`\n• `COW001 last fueling date`\n• `COW001 next fueling plan`\n• `COW001 power source`",
-    movement: "Examples:\n• `COW001 movement history`\n• `CWN104 last 3 movements`\n• `COW001 where was it moved from`",
+    cmdb: "Examples:\n• `COW001 current location`\n• `COW001 status`\n• `COW001 vendor and technology`\n• `COW001 deployment date`\n• `how many on-air in Central region`",
+    movement: "Examples:\n• `COW001 movement history`\n• `CWN104 last 3 movements`\n• `COW001 where was it moved from`\n• `how many movements in Western region`",
   };
 
   await bot.sendMessage(
@@ -141,16 +178,6 @@ async function answerQuery(
   query: string,
   category: Category
 ): Promise<void> {
-  const session = sessions.get(userId);
-  const questionsUsed = (session?.questionsUsed ?? 0) + 1;
-  const remaining = MAX_QUESTIONS - questionsUsed;
-
-  if (remaining > 0) {
-    sessions.set(userId, { category, questionsUsed });
-  } else {
-    sessions.delete(userId);
-  }
-
   const cowMatch = query.match(/\b(COW\d+|CWN\d+)\b/i);
   const cowId = cowMatch?.[0]?.toUpperCase();
 
@@ -174,20 +201,6 @@ async function answerQuery(
       data = rows ?? [];
       tableContext =
         "CMDB infrastructure data. Fields: cow_id, site_label, region, district, city, location, site_status, vendor, technology, latitude, longitude, first_deploying_date, last_deploying_date.";
-    } else if (category === "fuel") {
-      let q = supabase.from("energy_dashboard").select("*");
-      if (cowId) {
-        q = q.eq("site", cowId).limit(10) as typeof q;
-      } else {
-        const { region, status } = extractTextFilters(query);
-        if (region) q = q.ilike("region_name", `%${region}%`) as typeof q;
-        if (status) q = q.ilike("cow_status", `%${status}%`) as typeof q;
-        q = q.limit(1000) as typeof q;
-      }
-      const { data: rows } = await q;
-      data = rows ?? [];
-      tableContext =
-        "Fueling and energy data. The COW ID is in the 'site' field. Fields: site, cow_status, region_name, fuel_tank_level_pct, last_fueling_date, last_fueling_qty, next_fueling_plan, tank_capacity, power_source, total_on_air_days.";
     } else {
       let q = supabase
         .from("cow_movement")
@@ -218,8 +231,8 @@ async function answerQuery(
       chatId,
       cowId
         ? `❌ No records found for *${cowId}* in the ${CATEGORY_LABELS[category]} database.\n\nPlease check the site ID and try again.`
-        : `❌ No matching records found for your query. Try rephrasing or check the filters (region, status, etc.).`,
-      { parse_mode: "Markdown" }
+        : `❌ No matching records found. Try rephrasing or check the filters (region, status, etc.).`,
+      { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
     );
     return;
   }
@@ -240,7 +253,6 @@ You have been given ${tableContext}
 The dataset provided already reflects any region/status filters applied.
 When the user asks for a count, use the "Total matching records" number if provided — do NOT recount the sample.
 Format all dates as DD-MMM-YYYY.
-For fuel_tank_level_pct below 20% add ⚠️ LOW after the value. Below 10% add 🔴 CRITICAL.
 Never mention Supabase, APIs, N8N, or any technical tools.
 Reply in English only.`,
         },
@@ -258,21 +270,10 @@ Reply in English only.`,
     answer = "⚠️ Could not generate a response. Please try again.";
   }
 
-  if (remaining > 0) {
-    const label = CATEGORY_LABELS[category];
-    const footer =
-      `\n\n─────────────────\n` +
-      `📂 *${label}* session — question ${questionsUsed} of ${MAX_QUESTIONS}\n` +
-      `You have *${remaining}* question${remaining > 1 ? "s" : ""} remaining in this session.`;
-    await bot.sendMessage(chatId, answer + footer, { parse_mode: "Markdown" });
-  } else {
-    await bot.sendMessage(chatId, answer, { parse_mode: "Markdown" });
-    await bot.sendMessage(
-      chatId,
-      `✅ You've used all *${MAX_QUESTIONS}* questions for this session.\n\nSelect a database to start a new session:`,
-      { parse_mode: "Markdown", reply_markup: MAIN_KEYBOARD }
-    );
-  }
+  await bot.sendMessage(chatId, answer, {
+    parse_mode: "Markdown",
+    reply_markup: continueKeyboard(category),
+  });
 }
 
 export async function setupWebhook(domain: string): Promise<void> {
