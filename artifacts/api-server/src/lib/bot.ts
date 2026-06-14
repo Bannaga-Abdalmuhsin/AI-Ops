@@ -278,6 +278,21 @@ function detectChartRequest(query: string): boolean {
   );
 }
 
+function detectOnAirDaysQuery(query: string): boolean {
+  const lower = query.toLowerCase();
+  return (
+    lower.includes("on-air day") ||
+    lower.includes("on air day") ||
+    lower.includes("days on air") ||
+    lower.includes("days on-air") ||
+    lower.includes("deployment duration") ||
+    lower.includes("days deployed") ||
+    lower.includes("how long on air") ||
+    lower.includes("how long deployed") ||
+    (lower.includes("total") && lower.includes("days"))
+  );
+}
+
 function detectNeverMovedQuery(query: string): boolean {
   const lower = query.toLowerCase();
   return (
@@ -385,6 +400,38 @@ async function answerQuery(
   const cowId = cowMatch?.[0]?.toUpperCase();
 
   await bot.sendChatAction(chatId, "typing");
+
+  // ── On-air days — always from CMDB, works for never-moved COWs too ────────
+  if (cowId && detectOnAirDaysQuery(query)) {
+    const { data: cmdbRow } = await supabase
+      .from("cmdb")
+      .select("cow_id, site_label, first_deploying_date, last_deploying_date, site_status, region, city")
+      .eq("cow_id", cowId)
+      .maybeSingle();
+
+    if (cmdbRow) {
+      const firstRaw = cmdbRow.first_deploying_date as string | null;
+      const lastRaw = cmdbRow.last_deploying_date as string | null;
+      const firstDate = firstRaw ? new Date(firstRaw) : null;
+      const daysOnAir = firstDate && !isNaN(firstDate.getTime())
+        ? Math.floor((Date.now() - firstDate.getTime()) / 86_400_000)
+        : null;
+
+      await bot.sendMessage(
+        chatId,
+        `📅 *${cowId} — On-Air Duration*\n\n` +
+        `• Site Label: ${cmdbRow.site_label ?? "N/A"}\n` +
+        `• Status: ${cmdbRow.site_status ?? "N/A"}\n` +
+        `• Region: ${cmdbRow.region ?? "N/A"} | City: ${cmdbRow.city ?? "N/A"}\n` +
+        `• First Deployed: ${firstRaw ?? "N/A"}\n` +
+        `• Last Deployed: ${lastRaw ?? "N/A"}\n` +
+        `• Total On-Air Days: *${daysOnAir !== null ? daysOnAir.toLocaleString() : "Unknown"}*`,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   // ── Analytics fast-paths (movement only — no GPT needed) ─────────────────
   if (category === "movement") {
