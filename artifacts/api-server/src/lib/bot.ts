@@ -730,7 +730,8 @@ Rules:
 - No blank lines between rows. No extra text before or after.
 
 CMDB SITE ID LOOKUP RULE:
-When the user's message is just a site ID (e.g. "COW001" or "CWN104") with no other question, always reply with a full info card using EXACTLY this format (replace values with actual data):
+When the user's message is just a site ID (e.g. "COW001" or "CWN104") with no other question:
+- If the dataset contains a record for that site ID, reply with a full info card using EXACTLY this format:
 
 ### 📊 COW Information
 
@@ -747,9 +748,10 @@ When the user's message is just a site ID (e.g. "COW001" or "CWN104") with no ot
 - Longitude: <longitude>
 - First Deploying Date: <first_deploying_date>
 - Last Deploying Date: <last_deploying_date>
-- COW Status: <cow_status if available>
 
-Use this same card format for every CMDB site ID lookup, every time, with no extra commentary.`,
+- If the dataset is empty or does NOT contain a record for that site ID, reply ONLY with:
+❌ No COW site ID found matching "*<queried_id>*". Please check the ID and try again.
+Never use "Not available" placeholder cards — only show the card when real data exists.`,
         },
         {
           role: "user",
