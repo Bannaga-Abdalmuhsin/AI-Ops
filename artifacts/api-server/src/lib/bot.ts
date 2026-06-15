@@ -418,10 +418,13 @@ function buildBarChartUrl(
 async function answerQuery(
   chatId: number,
   userId: number,
-  query: string,
+  rawQuery: string,
   category: Category
 ): Promise<void> {
-  const cowMatch = query.match(/\b(COW\d+|CWN\d+)\b/i);
+  // Strip Telegram @mentions (e.g. "@MSDBOT2030") so the bot handle never leaks into GPT.
+  const query = rawQuery.replace(/@\S+/g, "").trim();
+  // Match all real COW ID patterns in the database: COW###, CW<letter>###, GAT###
+  const cowMatch = query.match(/\b(COW\d+|CW[A-Z]\d+|GAT\d+)\b/i);
   const cowId = cowMatch?.[0]?.toUpperCase();
 
   await bot.sendChatAction(chatId, "typing");
@@ -581,6 +584,16 @@ async function answerQuery(
         q = q.eq("cow_id", cowId).limit(10) as typeof q;
       } else {
         const { region, status } = extractTextFilters(query);
+        // Guard: require at least one meaningful filter — if the query has no recognisable
+        // COW ID, region, or status keyword, return guidance instead of dumping all records to GPT.
+        if (!region && !status) {
+          await bot.sendMessage(
+            chatId,
+            `🔍 Please include a COW ID, region, or status in your query.\n\nExamples:\n• \`COW545 status\`\n• \`CWH186 location\`\n• \`on-air COWs in Central region\`\n• \`off-air in Western region\``,
+            { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+          );
+          return;
+        }
         if (region) q = q.ilike("region", `%${region}%`) as typeof q;
         if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
         q = q.limit(1000) as typeof q;
