@@ -175,11 +175,16 @@ export async function fetchCowMovementRows(): Promise<CowMovementRow[]> {
   //  P=15 Radius          Q=16 Movement type    R=17 Region from
   //  S=18 Region to       T=19 City/District    U=20 Vendor
   //  V=21 Priority        W=22 Cancelled        X=23 Month
-  const data = await readRange(SHEET2_ID, "COW Movement tracker!A1:X2756");
-  if (data.length < 2) return [];
+  //
+  // Fetch in two batches to stay under the Replit connector response-body limit.
+  const [part1, part2] = await Promise.all([
+    readRange(SHEET2_ID, "COW Movement tracker!A1:X1400"),   // header + rows 1–1399
+    readRange(SHEET2_ID, "COW Movement tracker!A1401:X2756"), // rows 1400–2755 (no header)
+  ]);
+  if (part1.length < 2) return [];
 
-  const headers = data[0];
-  const rows = data.slice(1);
+  const headers = part1[0];
+  const rows = [...part1.slice(1), ...part2];
 
   return rows
     .filter(row => row[0]) // must have COW ID
