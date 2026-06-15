@@ -460,7 +460,21 @@ async function answerQuery(
 
   // ── Analytics fast-paths (movement only — no GPT needed) ─────────────────
   if (category === "movement") {
-    // 0. Exact count queries — use Supabase count API, no row fetch, no limit cap
+    // 0a. Exact count for a specific COW — bypass GPT entirely
+    if (cowId && detectCountQuery(query)) {
+      const { count } = await supabase
+        .from("cow_movement")
+        .select("*", { count: "exact", head: true })
+        .eq("cow_id", cowId);
+      await bot.sendMessage(
+        chatId,
+        `📊 *${cowId}* has moved *${(count ?? 0).toLocaleString()} times*`,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+
+    // 0b. Exact count for a region (no cowId) — no row fetch, no limit cap
     if (!cowId && detectCountQuery(query)) {
       const { region } = extractTextFilters(query);
       let q = supabase
@@ -585,7 +599,21 @@ async function answerQuery(
           .select("*")
           .order("moved_date", { ascending: false });
         if (cowId) {
-          q = q.eq("cow_id", cowId).limit(200) as typeof q;
+          // Fetch rows AND exact count in parallel so the header is always accurate.
+          const [countResult, rowsResult] = await Promise.all([
+            supabase
+              .from("cow_movement")
+              .select("*", { count: "exact", head: true })
+              .eq("cow_id", cowId),
+            q.eq("cow_id", cowId).limit(200),
+          ]);
+          data = rowsResult.data ?? [];
+          // Use count from Supabase (not data.length) — captures rows beyond the 200 limit.
+          const exactCount = countResult.count ?? data.length;
+          tableContext =
+            `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.\n\n` +
+            `EXACT_TRIP_COUNT: ${exactCount}\n` +
+            `⚠️ You MUST use EXACT_TRIP_COUNT (${exactCount}) as {N} in the movement header — never count the rows yourself.`;
         } else {
           const { region } = extractTextFilters(query);
           if (region) {
@@ -594,11 +622,9 @@ async function answerQuery(
             ) as typeof q;
           }
           q = q.limit(1000) as typeof q;
-        }
-        const { data: rows } = await q;
-        data = rows ?? [];
-      }
-      tableContext = `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.
+          const { data: rows } = await q;
+          data = rows ?? [];
+          tableContext = `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.
 
 REGIONAL QUERY RULE:
 When the user asks about movements in a region (e.g. "west region movement"), summarize the actual records provided:
@@ -616,6 +642,8 @@ SAUDI EVENTS CONTEXT — use ONLY when the user asks about patterns, spikes, or 
 • Ramadan: Annual — all regions.
 • Janadriyah: Feb–Mar — CENTRAL.
 • Formula E/F1: Varies — Riyadh/Jeddah.`;
+        }
+      }
     }
   } catch (err) {
     logger.error({ err }, "Supabase query error");
