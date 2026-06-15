@@ -165,8 +165,17 @@ export async function fetchEnergyRows(): Promise<EnergyRow[]> {
 }
 
 export async function fetchCowMovementRows(): Promise<CowMovementRow[]> {
-  // Row 1 = headers, Row 2+ = data (up to 2534 rows)
-  const data = await readRange(SHEET2_ID, "Movement-Data!A1:AE2534");
+  // "COW Movement tracker" sheet — row 1 = headers, row 2+ = data (up to 2756 rows)
+  // Column mapping (0-indexed):
+  //  A=0  COWs ID         B=1  Planned          C=2  Moved Date/Time
+  //  D=3  Reached Date    E=4  From Location    F=5  From Latitude
+  //  G=6  From Longitude  H=7  Category         I=8  To Location
+  //  J=9  Event name      K=10 Sub location     L=11 To Latitude
+  //  M=12 To Longitude    N=13 Admin Region     O=14 Distance
+  //  P=15 Radius          Q=16 Movement type    R=17 Region from
+  //  S=18 Region to       T=19 City/District    U=20 Vendor
+  //  V=21 Priority        W=22 Cancelled        X=23 Month
+  const data = await readRange(SHEET2_ID, "COW Movement tracker!A1:X2756");
   if (data.length < 2) return [];
 
   const headers = data[0];
@@ -181,20 +190,20 @@ export async function fetchCowMovementRows(): Promise<CowMovementRow[]> {
       });
       return {
         cow_id: row[0] || null,
-        site_label: row[1] || null,
-        moved_date: row[12] || null,
-        moved_month_year: row[13] || null,
-        from_location: row[16] || null,
-        to_location: row[20] || null,
-        from_latitude: toFloat(row[18]),
-        from_longitude: toFloat(row[19]),
-        to_latitude: toFloat(row[22]),
-        to_longitude: toFloat(row[23]),
-        distance: toFloat(row[24]),
-        movement_type: row[25] || null,
-        region_from: row[26] || null,
-        region_to: row[27] || null,
-        vendor: row[28] || null,
+        site_label: null,              // not present in new sheet
+        moved_date: row[2] || null,    // C: Moved Date/Time
+        moved_month_year: row[23] || null, // X: Month
+        from_location: row[4] || null, // E: From Location
+        to_location: row[8] || null,   // I: To Location
+        from_latitude: toFloat(row[5]),  // F
+        from_longitude: toFloat(row[6]), // G
+        to_latitude: toFloat(row[11]),   // L
+        to_longitude: toFloat(row[12]),  // M
+        distance: toFloat(row[14]),      // O: Distance
+        movement_type: row[16] || null,  // Q: Movement type
+        region_from: row[17] || null,    // R: Region from
+        region_to: row[18] || null,      // S: Region to
+        vendor: row[20] || null,         // U: Vendor
         raw_data: raw,
       };
     });

@@ -61,7 +61,7 @@ A live-updating ops dashboard that syncs three Google Sheets (CMDB, Energy Dashb
   - CMDB: sheet "Mastersheet Data Base", headers at row 3
   - Energy: sheet "Energy Dashboard", headers at row 1
 - Spreadsheet 2 ID: `1bzcG70TopGRRm60NbKX4o3SCE2-QRUDFnY0Z4fYSjEM`
-  - COW Movement: sheet "Movement-Data", headers at row 1
+  - COW Movement: sheet "COW Movement tracker", headers at row 1 (2,756 rows)
 - Connector: `google-sheet` (Replit integration, connection ID: `conn_google-sheet_01KTTVR5X7VYQKFP26SVVTRXS3`)
 
 ## User preferences
