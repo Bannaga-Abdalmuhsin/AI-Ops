@@ -315,20 +315,31 @@ async function paginateAllMovementsFull(): Promise<Movement[]> {
   return pages.flatMap((p) => (p.data ?? []) as Movement[]);
 }
 
-// Detect if the user is asking for a chart or visual.
-function detectChartRequest(query: string): boolean {
+// Chart dimension detection — returns which dimension to visualize, or null if not a chart request.
+type ChartDimension = "year" | "month" | "region" | "warehouse" | "event_type" | "vendor" | "avg_distance";
+
+function detectChartDimension(query: string): ChartDimension | null {
   const lower = query.toLowerCase();
-  return (
-    lower.includes("chart") ||
-    lower.includes("graph") ||
-    lower.includes("bar") ||
-    lower.includes("visual") ||
-    lower.includes("by year") ||
-    lower.includes("per year") ||
-    lower.includes("yearly") ||
-    lower.includes("annually") ||
-    lower.includes("each year")
-  );
+  const isChart =
+    lower.includes("chart") || lower.includes("graph") || lower.includes("visual") ||
+    lower.includes("by year") || lower.includes("per year") || lower.includes("yearly") || lower.includes("annually") || lower.includes("each year") ||
+    lower.includes("by month") || lower.includes("per month") || lower.includes("monthly") ||
+    lower.includes("by region") || lower.includes("per region") ||
+    lower.includes("by wh") || lower.includes("by warehouse") ||
+    lower.includes("by event") || lower.includes("event type") || lower.includes("movement type") || lower.includes("by type") ||
+    lower.includes("by vendor") || lower.includes("per vendor") ||
+    lower.includes("average distance") || lower.includes("avg distance") || lower.includes("by distance");
+
+  if (!isChart) return null;
+
+  // Check dimension keywords — avg_distance first to avoid clashing with "distance" in other phrases
+  if (lower.includes("average distance") || lower.includes("avg distance") || lower.includes("by distance")) return "avg_distance";
+  if (lower.includes("month")) return "month";
+  if (lower.includes("region")) return "region";
+  if (lower.includes("wh") || lower.includes("warehouse") || lower.includes("hub")) return "warehouse";
+  if (lower.includes("event") || lower.includes("event type") || lower.includes("movement type") || lower.includes("by type")) return "event_type";
+  if (lower.includes("vendor")) return "vendor";
+  return "year"; // default
 }
 
 function detectOnAirDaysQuery(query: string): boolean {
@@ -406,27 +417,96 @@ function detectTopEventsQuery(query: string): boolean {
   );
 }
 
-// Count movement records grouped by year (from moved_date).
+// ── Aggregation helpers ──────────────────────────────────────────────────────
+
 function aggregateMovementsByYear(
-  data: Record<string, unknown>[]
+  data: Array<{ moved_date?: unknown }>
 ): { labels: string[]; values: number[] } {
   const counts: Record<string, number> = {};
   for (const row of data) {
-    const dateStr = row.moved_date as string | undefined;
-    if (dateStr) {
-      const year = String(new Date(dateStr).getFullYear());
-      if (year !== "NaN") counts[year] = (counts[year] ?? 0) + 1;
-    }
+    const d = new Date(row.moved_date as string);
+    const year = String(d.getFullYear());
+    if (year !== "NaN") counts[year] = (counts[year] ?? 0) + 1;
   }
   const sorted = Object.keys(counts).sort();
   return { labels: sorted, values: sorted.map((y) => counts[y]!) };
+}
+
+function aggregateByMonth(
+  data: Array<{ moved_date?: unknown }>
+): { labels: string[]; values: number[] } {
+  const counts: Record<string, number> = {};
+  for (const row of data) {
+    const d = new Date(row.moved_date as string);
+    if (isNaN(d.getTime())) continue;
+    const key = `${d.toLocaleString("en", { month: "short" })}-${String(d.getFullYear()).slice(2)}`;
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  // Sort chronologically
+  const sorted = Object.keys(counts).sort(
+    (a, b) => new Date(`1 ${a}`).getTime() - new Date(`1 ${b}`).getTime()
+  );
+  return { labels: sorted, values: sorted.map((k) => counts[k]!) };
+}
+
+function aggregateByField(
+  data: Movement[],
+  field: keyof Movement,
+  topN = 15
+): { labels: string[]; values: number[] } {
+  const counts: Record<string, number> = {};
+  for (const row of data) {
+    const val = String(row[field] ?? "").trim();
+    if (!val || val.toUpperCase() === "#N/A" || val === "NA" || val === "null") continue;
+    counts[val] = (counts[val] ?? 0) + 1;
+  }
+  const sorted = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN);
+  return { labels: sorted.map(([k]) => k), values: sorted.map(([, v]) => v) };
+}
+
+function aggregateByWarehouse(
+  data: Movement[],
+  topN = 10
+): { labels: string[]; values: number[] } {
+  const counts: Record<string, number> = {};
+  for (const row of data) {
+    const loc = (row.from_location ?? "").trim();
+    const up = loc.toUpperCase();
+    if (!loc || (!up.includes("WH") && !up.includes("WAREHOUSE") && !up.includes("DEPOT"))) continue;
+    counts[loc] = (counts[loc] ?? 0) + 1;
+  }
+  const sorted = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN);
+  return { labels: sorted.map(([k]) => k), values: sorted.map(([, v]) => v) };
+}
+
+function aggregateAvgDistanceByRegion(
+  data: Movement[]
+): { labels: string[]; values: number[] } {
+  const stats: Record<string, { sum: number; count: number }> = {};
+  for (const row of data) {
+    const region = (row.region_to ?? row.region_from ?? "").trim();
+    const dist = typeof row.distance === "number" ? row.distance : null;
+    if (!region || dist === null || isNaN(dist) || dist <= 0) continue;
+    if (!stats[region]) stats[region] = { sum: 0, count: 0 };
+    stats[region].sum += dist;
+    stats[region].count += 1;
+  }
+  const entries = Object.entries(stats)
+    .map(([region, s]) => ({ region, avg: Math.round(s.sum / s.count) }))
+    .sort((a, b) => b.avg - a.avg);
+  return { labels: entries.map((e) => e.region), values: entries.map((e) => e.avg) };
 }
 
 // Build a QuickChart.io bar-chart URL that resolves to a PNG image.
 function buildBarChartUrl(
   labels: string[],
   values: number[],
-  title: string
+  title: string,
+  valueLabel = "Movements"
 ): string {
   const config = {
     type: "bar",
@@ -434,7 +514,7 @@ function buildBarChartUrl(
       labels,
       datasets: [
         {
-          label: "Movements",
+          label: valueLabel,
           data: values,
           backgroundColor: "rgba(54, 162, 235, 0.85)",
           borderColor: "rgba(54, 162, 235, 1)",
@@ -630,6 +710,70 @@ async function answerQuery(
       );
       return;
     }
+
+    // 4. Bar charts — all 7 dimensions, no GPT needed
+    const chartDim = detectChartDimension(query);
+    if (chartDim) {
+      await bot.sendChatAction(chatId, "upload_photo");
+      let labels: string[] = [];
+      let values: number[] = [];
+      let chartTitle = "";
+      let valueLabel = "Movements";
+
+      if (chartDim === "year" || chartDim === "month") {
+        const lightData = await paginateAllMovements(cowId);
+        if (chartDim === "year") {
+          ({ labels, values } = aggregateMovementsByYear(lightData));
+          chartTitle = cowId ? `Movements by Year — ${cowId}` : "Total COW Movements by Year";
+        } else {
+          ({ labels, values } = aggregateByMonth(lightData));
+          chartTitle = cowId ? `Movements by Month — ${cowId}` : "COW Movements by Month";
+        }
+      } else {
+        const fullData = await paginateAllMovementsFull();
+        if (chartDim === "region") {
+          ({ labels, values } = aggregateByField(fullData, "region_to"));
+          chartTitle = "Movements by Destination Region";
+        } else if (chartDim === "warehouse") {
+          ({ labels, values } = aggregateByWarehouse(fullData));
+          chartTitle = "Movements by Source Warehouse (Top 10)";
+        } else if (chartDim === "event_type") {
+          ({ labels, values } = aggregateByField(fullData, "movement_type"));
+          chartTitle = "Movements by Event / Type";
+        } else if (chartDim === "vendor") {
+          ({ labels, values } = aggregateByField(fullData, "vendor"));
+          chartTitle = "Movements by Vendor";
+        } else if (chartDim === "avg_distance") {
+          ({ labels, values } = aggregateAvgDistanceByRegion(fullData));
+          chartTitle = "Avg Movement Distance by Region (km)";
+          valueLabel = "Avg km";
+        }
+      }
+
+      if (labels.length === 0) {
+        await bot.sendMessage(chatId, "⚠️ No data available to generate this chart.", {
+          parse_mode: "Markdown",
+          reply_markup: continueKeyboard(category),
+        });
+        return;
+      }
+
+      const chartUrl = buildBarChartUrl(labels, values, chartTitle, valueLabel);
+      const total = valueLabel === "Movements" ? values.reduce((s, v) => s + v, 0) : null;
+      const summaryLines = labels
+        .map((l, i) => `• ${l}: *${values[i].toLocaleString()}*${valueLabel !== "Movements" ? " km" : ""}`)
+        .join("\n");
+
+      await bot.sendPhoto(chatId, chartUrl, {
+        caption:
+          `📊 *${chartTitle}*\n\n` +
+          (total !== null ? `Total: *${total.toLocaleString()}* movements\n\n` : "") +
+          summaryLines,
+        parse_mode: "Markdown",
+        reply_markup: continueKeyboard(category),
+      });
+      return;
+    }
   }
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -665,41 +809,37 @@ async function answerQuery(
       tableContext =
         "CMDB infrastructure data. Fields: cow_id, site_label, region, district, city, location, site_status, vendor, technology, latitude, longitude, first_deploying_date, last_deploying_date.";
     } else {
-      if (detectChartRequest(query)) {
-        // Chart path: fetch ALL records via pagination so year counts are accurate.
-        data = await paginateAllMovements(cowId);
+      let q = supabase
+        .from("cow_movement")
+        .select("*")
+        .order("moved_date", { ascending: false });
+      if (cowId) {
+        // Fetch rows AND exact count in parallel so the header is always accurate.
+        const [countResult, rowsResult] = await Promise.all([
+          supabase
+            .from("cow_movement")
+            .select("*", { count: "exact", head: true })
+            .eq("cow_id", cowId),
+          q.eq("cow_id", cowId).limit(200),
+        ]);
+        data = rowsResult.data ?? [];
+        // Use count from Supabase (not data.length) — captures rows beyond the 200 limit.
+        const exactCount = countResult.count ?? data.length;
+        tableContext =
+          `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.\n\n` +
+          `EXACT_TRIP_COUNT: ${exactCount}\n` +
+          `⚠️ You MUST use EXACT_TRIP_COUNT (${exactCount}) as {N} in the movement header — never count the rows yourself.`;
       } else {
-        let q = supabase
-          .from("cow_movement")
-          .select("*")
-          .order("moved_date", { ascending: false });
-        if (cowId) {
-          // Fetch rows AND exact count in parallel so the header is always accurate.
-          const [countResult, rowsResult] = await Promise.all([
-            supabase
-              .from("cow_movement")
-              .select("*", { count: "exact", head: true })
-              .eq("cow_id", cowId),
-            q.eq("cow_id", cowId).limit(200),
-          ]);
-          data = rowsResult.data ?? [];
-          // Use count from Supabase (not data.length) — captures rows beyond the 200 limit.
-          const exactCount = countResult.count ?? data.length;
-          tableContext =
-            `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.\n\n` +
-            `EXACT_TRIP_COUNT: ${exactCount}\n` +
-            `⚠️ You MUST use EXACT_TRIP_COUNT (${exactCount}) as {N} in the movement header — never count the rows yourself.`;
-        } else {
-          const { region } = extractTextFilters(query);
-          if (region) {
-            q = q.or(
-              `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
-            ) as typeof q;
-          }
-          q = q.limit(1000) as typeof q;
-          const { data: rows } = await q;
-          data = rows ?? [];
-          tableContext = `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.
+        const { region } = extractTextFilters(query);
+        if (region) {
+          q = q.or(
+            `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
+          ) as typeof q;
+        }
+        q = q.limit(1000) as typeof q;
+        const { data: rows } = await q;
+        data = rows ?? [];
+        tableContext = `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.
 
 REGIONAL QUERY RULE:
 When the user asks about movements in a region (e.g. "west region movement"), summarize the actual records provided:
@@ -717,7 +857,6 @@ SAUDI EVENTS CONTEXT — use ONLY when the user asks about patterns, spikes, or 
 • Ramadan: Annual — all regions.
 • Janadriyah: Feb–Mar — CENTRAL.
 • Formula E/F1: Varies — Riyadh/Jeddah.`;
-        }
       }
     }
   } catch (err) {
@@ -733,27 +872,6 @@ SAUDI EVENTS CONTEXT — use ONLY when the user asks about patterns, spikes, or 
       { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
     );
     return;
-  }
-
-  // Chart fast-path: movement by year — no GPT call needed.
-  if (category === "movement" && detectChartRequest(query)) {
-    const { labels, values } = aggregateMovementsByYear(data);
-    if (labels.length > 0) {
-      const title = cowId
-        ? `Movements by Year — ${cowId}`
-        : "Total COW Movements by Year";
-      const chartUrl = buildBarChartUrl(labels, values, title);
-      const total = values.reduce((s, v) => s + v, 0);
-      const lines = labels.map((l, i) => `• ${l}: *${values[i]}* movements`);
-      await bot.sendPhoto(chatId, chartUrl, {
-        caption:
-          `📊 *${title}*\n\nTotal: *${total}* movements\n\n` +
-          lines.join("\n"),
-        parse_mode: "Markdown",
-        reply_markup: continueKeyboard(category),
-      });
-      return;
-    }
   }
 
   const { payload: dataPayload, totalCount } = buildDataPayload(data);
@@ -848,7 +966,7 @@ export async function setupBot(domain: string | undefined): Promise<void> {
 
   const webhookUrl = `https://${domain}/api/telegram/webhook`;
   try {
-    await bot.setWebHook(webhookUrl, { drop_pending_updates: false });
+    await bot.setWebHook(webhookUrl);
     logger.info({ webhookUrl }, "Telegram webhook registered");
   } catch (err) {
     logger.error({ err }, "Failed to register Telegram webhook");
