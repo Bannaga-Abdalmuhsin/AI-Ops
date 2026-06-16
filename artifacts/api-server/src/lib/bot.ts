@@ -326,7 +326,7 @@ function detectChartDimension(query: string): ChartDimension | null {
     lower.includes("by month") || lower.includes("per month") || lower.includes("monthly") ||
     lower.includes("by region") || lower.includes("per region") ||
     lower.includes("by wh") || lower.includes("by warehouse") ||
-    lower.includes("by event") || lower.includes("event type") || lower.includes("movement type") || lower.includes("by type") ||
+    lower.includes("by event") || lower.includes("by events") || lower.includes("event type") || lower.includes("events type") || lower.includes("movement type") || lower.includes("by type") || lower.includes("per event") || lower.includes("category") ||
     lower.includes("by vendor") || lower.includes("per vendor") ||
     lower.includes("average distance") || lower.includes("avg distance") || lower.includes("by distance");
 
@@ -337,7 +337,7 @@ function detectChartDimension(query: string): ChartDimension | null {
   if (lower.includes("month")) return "month";
   if (lower.includes("region")) return "region";
   if (lower.includes("wh") || lower.includes("warehouse") || lower.includes("hub")) return "warehouse";
-  if (lower.includes("event") || lower.includes("event type") || lower.includes("movement type") || lower.includes("by type")) return "event_type";
+  if (lower.includes("event") || lower.includes("event type") || lower.includes("events type") || lower.includes("movement type") || lower.includes("by type") || lower.includes("category")) return "event_type";
   if (lower.includes("vendor")) return "vendor";
   return "year"; // default
 }
@@ -412,9 +412,8 @@ function detectTopEventsQuery(query: string): boolean {
     lower.includes("hajj") ||
     lower.includes("riyadh season") ||
     lower.includes("formula") ||
-    lower.includes("national day") ||
-    lower.includes("by event") ||
-    lower.includes("per event")
+    lower.includes("national day")
+    // "by event" / "per event" intentionally removed — those route to the chart fast-path
   );
 }
 
