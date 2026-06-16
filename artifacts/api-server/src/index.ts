@@ -24,11 +24,12 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
 
-  // In production REPLIT_DOMAINS holds the public .replit.app domain.
-  // setupBot registers the webhook in production and skips in dev.
+  // In production, TELEGRAM_WEBHOOK_DOMAIN is the canonical source (set as a
+  // shared env var to the deployed .replit.app domain). REPLIT_DOMAINS is a
+  // runtime-managed fallback that Replit may or may not inject.
   const domain =
-    process.env.REPLIT_DOMAINS?.split(",")[0]?.trim() ??
-    process.env.REPLIT_DEV_DOMAIN;
+    process.env.TELEGRAM_WEBHOOK_DOMAIN?.trim() ||
+    process.env.REPLIT_DOMAINS?.split(",")[0]?.trim();
 
   setupBot(domain).catch((e) =>
     logger.error({ e }, "Telegram bot setup failed")
