@@ -12,6 +12,7 @@
   "dependencies": {
     "@replit/connectors-sdk": "^0.4.1",
     "@supabase/supabase-js": "^2.108.1",
+    "@types/express-rate-limit": "^6.0.2",
     "@types/pg": "^8.20.0",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
@@ -19,6 +20,8 @@
     "cors": "^2.8.6",
     "drizzle-orm": "catalog:",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
     "node-cron": "^4.2.1",
     "node-telegram-bot-api": "^0.67.0",
     "openai": "^6.42.0",

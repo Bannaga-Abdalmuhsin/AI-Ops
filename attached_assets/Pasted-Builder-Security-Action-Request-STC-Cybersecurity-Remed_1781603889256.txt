@@ -1,0 +1,95 @@
+Builder Security Action Request — STC Cybersecurity Remediation
+
+Review the attached STC Cybersecurity Readiness Report and implement a remediation plan to move the ACES MSD COW OPS SYNC Telegram Bot from "NOT APPROVED FOR PRODUCTION" to STC Tier 2 Restricted compliance readiness.
+
+Priority 1 — Fix Critical Security Gaps (Mandatory Before Production)
+
+1. API Protection
+
+* Add authentication middleware to all REST API routes.
+* Implement Bearer token/API key validation.
+* Remove public access to:
+  /api/data/*
+  /api/sync/*
+  /api/stats/*
+  /api/logs
+
+2. Telegram Security
+
+* Implement Telegram webhook secret token verification.
+* Reject any webhook request without valid Telegram signature/header.
+
+3. User Identity Management
+   Replace shared BOT_PASSWORD authentication with:
+
+* Approved Telegram user ID whitelist.
+* Individual user identity records.
+* User access expiry.
+* Admin approve/revoke capability.
+
+4. Access Control
+   Implement RBAC:
+
+* Viewer: read-only operational information.
+* Operator: approved operational actions.
+* Admin: user management and system controls.
+
+5. Database Security
+
+* Stop using SUPABASE_SERVICE_ROLE_KEY globally.
+* Create least-privilege database access.
+* Enable Row Level Security (RLS).
+* Separate sync service permissions from bot query permissions.
+
+Priority 2 — STC Tier 2 Required Controls
+
+6. API Hardening
+   Implement:
+
+* Restricted CORS
+* Rate limiting
+* HTTP security headers (Helmet)
+* Request size limits
+
+7. AI Security
+   For OpenAI integration:
+
+* Prevent prompt injection.
+* Sanitize user input.
+* Separate operational data context from user instructions.
+* Review whether Azure OpenAI or approved STC AI hosting is required.
+* Do not send sensitive COW coordinates/site data externally without approval.
+
+8. Audit & Monitoring
+   Create permanent audit logs:
+
+* User ID
+* Query/action
+* Timestamp
+* Data accessed
+* Response type
+* Admin actions
+
+9. Secrets Management
+   Implement:
+
+* Secret rotation procedure.
+* Remove unused secrets.
+* Production secrets vault.
+
+10. Security Documentation
+    Generate:
+
+* Updated architecture diagram
+* Data flow diagram
+* Access control matrix
+* Security control checklist
+* STC readiness status report
+
+Final Deliverable:
+Provide a new report showing:
+
+* Implemented controls
+* Remaining gaps
+* Current STC compliance readiness percentage
+* Whether the system is ready for production security approval.

@@ -9,6 +9,14 @@ import {
   getTopDestinations,
   getNeverMovedCows,
 } from "./movement-analytics.js";
+import {
+  getUserRole,
+  isEnvAdmin,
+  addUser,
+  revokeUser,
+  listAllUsers,
+  type BotRole,
+} from "./bot-users.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -20,15 +28,62 @@ export const bot = new TelegramBot(token, { polling: false });
 
 const openai = new OpenAI({ apiKey: openaiKey });
 
-// --- Access control ---------------------------------------------------------
-const BOT_PASSWORD = process.env.BOT_PASSWORD ?? "";
-if (!BOT_PASSWORD) {
-  logger.warn("BOT_PASSWORD not set — bot is unprotected");
+// ── Audit log ─────────────────────────────────────────────────────────────────
+async function auditLog(
+  userId: number,
+  category: string | null,
+  queryText: string,
+  responseType: string,
+): Promise<void> {
+  try {
+    await supabase.from("bot_audit_log").insert({
+      telegram_user_id: userId,
+      category,
+      query_text: queryText.slice(0, 500),
+      response_type: responseType,
+    });
+  } catch (err) {
+    logger.warn({ err }, "Failed to write bot_audit_log — run security migration");
+  }
 }
 
-// Users who have successfully entered the password this server session.
-const authenticatedUsers = new Set<number>();
-// ---------------------------------------------------------------------------
+// ── Prompt injection detection ────────────────────────────────────────────────
+const INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|your)\s+instructions/i,
+  /disregard\s+(all\s+)?(your\s+)?(instructions|rules)/i,
+  /you\s+are\s+now\s+a/i,
+  /forget\s+(all|what|your)/i,
+  /new\s+system\s+prompt/i,
+  /override\s+(your\s+)?(instructions|rules)/i,
+  /<\|im_start\|>|<\|im_end\|>/,
+  /\[SYSTEM\]/i,
+  /\[INST\]/i,
+  /act\s+as\s+(a\s+)?different/i,
+];
+
+function detectPromptInjection(text: string): boolean {
+  return INJECTION_PATTERNS.some((p) => p.test(text));
+}
+
+// ── Strip sensitive fields before sending to external AI ─────────────────────
+// GPS coordinates are restricted data — never send to OpenAI.
+const GPS_FIELDS = new Set([
+  "latitude", "longitude",
+  "from_latitude", "from_longitude",
+  "to_latitude", "to_longitude",
+]);
+
+function stripSensitiveFields(
+  rows: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return rows.map((row) => {
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(row)) {
+      if (!GPS_FIELDS.has(k)) clean[k] = v;
+    }
+    return clean;
+  });
+}
 
 type Category = "cmdb" | "movement";
 
@@ -82,30 +137,28 @@ export async function handleUpdate(update: TelegramBot.Update): Promise<void> {
 async function handleMessage(msg: TelegramBot.Message): Promise<void> {
   const chatId = msg.chat.id;
   const userId = msg.from?.id ?? chatId;
+  const username = msg.from?.username;
   const text = (msg.text ?? "").trim();
 
-  // ── Auth gate ──────────────────────────────────────────────────────────
-  if (!authenticatedUsers.has(userId)) {
-    if (BOT_PASSWORD && text === BOT_PASSWORD) {
-      authenticatedUsers.add(userId);
-      await bot.sendMessage(
-        chatId,
-        `✅ *Access granted!* Welcome to ACES MSD.\n\n${GREETING}`,
-        { parse_mode: "Markdown", reply_markup: MAIN_KEYBOARD }
-      );
-    } else {
-      const wrongAttempt = text.length > 0;
-      await bot.sendMessage(
-        chatId,
-        wrongAttempt
-          ? "❌ *Incorrect password.* Please try again:"
-          : "🔒 *This bot is protected.*\n\nPlease enter the access password to continue:",
-        { parse_mode: "Markdown" }
-      );
-    }
+  // ── Role-based access control ─────────────────────────────────────────
+  const role = await getUserRole(userId);
+  if (!role) {
+    void auditLog(userId, null, text.slice(0, 100), "auth_fail");
+    await bot.sendMessage(
+      chatId,
+      "⛔ *Access Denied*\n\nYou are not authorised to use this bot.\n\nContact your STC system administrator to request access.",
+      { parse_mode: "Markdown" },
+    );
     return;
   }
-  // ──────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────
+
+  // ── Admin commands (slash commands) ───────────────────────────────────
+  if (text.startsWith("/")) {
+    await handleBotCommand(chatId, userId, role, text, username);
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────
 
   const session = sessions.get(userId);
 
@@ -131,16 +184,18 @@ async function handleCallbackQuery(
 
   if (!chatId) return;
 
-  // ── Auth gate ──────────────────────────────────────────────────────────
-  if (!authenticatedUsers.has(userId)) {
+  // ── Role-based access control ─────────────────────────────────────────
+  const role = await getUserRole(userId);
+  if (!role) {
+    void auditLog(userId, null, data ?? "", "auth_fail");
     await bot.sendMessage(
       chatId,
-      "🔒 *This bot is protected.*\n\nPlease enter the access password to continue:",
-      { parse_mode: "Markdown" }
+      "⛔ *Access Denied*\n\nYou are not authorised to use this bot.",
+      { parse_mode: "Markdown" },
     );
     return;
   }
-  // ──────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────
 
   // Handle navigation actions
   if (data === "main_menu") {
@@ -262,14 +317,16 @@ function extractTextFilters(q: string): { region?: string; status?: string; city
 }
 
 // Build a concise data payload for GPT: all rows when small, count + sample when large.
+// GPS coordinates are stripped before sending to OpenAI (data residency control).
 function buildDataPayload(
   rows: Record<string, unknown>[]
 ): { payload: string; totalCount: number } {
-  const totalCount = rows.length;
+  const sanitised = stripSensitiveFields(rows);
+  const totalCount = sanitised.length;
   if (totalCount <= 50) {
-    return { payload: JSON.stringify(rows, null, 2), totalCount };
+    return { payload: JSON.stringify(sanitised, null, 2), totalCount };
   }
-  const sample = rows.slice(0, 30);
+  const sample = sanitised.slice(0, 30);
   return {
     payload: `Total matching records: ${totalCount}\n\nSample (first 30 of ${totalCount}):\n${JSON.stringify(sample, null, 2)}`,
     totalCount,
@@ -534,12 +591,129 @@ function buildBarChartUrl(
   return `https://quickchart.io/chart?c=${encoded}&w=700&h=420&bkg=white`;
 }
 
+// ── Admin command handler ─────────────────────────────────────────────────────
+async function handleBotCommand(
+  chatId: number,
+  userId: number,
+  role: BotRole,
+  text: string,
+  username?: string,
+): Promise<void> {
+  const parts = text.trim().split(/\s+/);
+  const cmd = (parts[0] ?? "").toLowerCase();
+
+  void auditLog(userId, null, text.slice(0, 200), "admin");
+
+  // ── /whoami — show own access level
+  if (cmd === "/whoami" || cmd === "/start") {
+    const isAdmin = isEnvAdmin(userId);
+    await bot.sendMessage(
+      chatId,
+      `👤 *Your Access*\n\n• Telegram ID: \`${userId}\`\n• Username: @${username ?? "unknown"}\n• Role: *${role}*${isAdmin ? " _(env admin)_" : ""}`,
+      { parse_mode: "Markdown" },
+    );
+    return;
+  }
+
+  // ── /adduser <telegram_id> <role> — admins only
+  if (cmd === "/adduser") {
+    if (role !== "admin") {
+      await bot.sendMessage(chatId, "⛔ Admin access required.", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(parts[1] ?? "", 10);
+    const targetRole = (parts[2] ?? "viewer") as BotRole;
+    if (isNaN(targetId) || targetId <= 0) {
+      await bot.sendMessage(chatId, "❌ Usage: `/adduser <telegram_user_id> <viewer|operator|admin>`", { parse_mode: "Markdown" });
+      return;
+    }
+    if (!["viewer", "operator", "admin"].includes(targetRole)) {
+      await bot.sendMessage(chatId, "❌ Role must be: `viewer`, `operator`, or `admin`", { parse_mode: "Markdown" });
+      return;
+    }
+    try {
+      await addUser(targetId, targetRole, userId, parts[3]);
+      await bot.sendMessage(chatId, `✅ User \`${targetId}\` added with role *${targetRole}*`, { parse_mode: "Markdown" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await bot.sendMessage(chatId, `❌ Failed: ${msg}`, { parse_mode: "Markdown" });
+    }
+    return;
+  }
+
+  // ── /removeuser <telegram_id> — admins only
+  if (cmd === "/removeuser" || cmd === "/revokeuser") {
+    if (role !== "admin") {
+      await bot.sendMessage(chatId, "⛔ Admin access required.", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(parts[1] ?? "", 10);
+    if (isNaN(targetId) || targetId <= 0) {
+      await bot.sendMessage(chatId, "❌ Usage: `/removeuser <telegram_user_id>`", { parse_mode: "Markdown" });
+      return;
+    }
+    const ok = await revokeUser(targetId);
+    await bot.sendMessage(
+      chatId,
+      ok ? `✅ User \`${targetId}\` revoked.` : `⚠️ User \`${targetId}\` not found or already inactive.`,
+      { parse_mode: "Markdown" },
+    );
+    return;
+  }
+
+  // ── /listusers — admins only
+  if (cmd === "/listusers") {
+    if (role !== "admin") {
+      await bot.sendMessage(chatId, "⛔ Admin access required.", { parse_mode: "Markdown" });
+      return;
+    }
+    const users = await listAllUsers();
+    if (users.length === 0) {
+      await bot.sendMessage(chatId, "📋 No users in the allowlist yet. Use `/adduser` to add one.", { parse_mode: "Markdown" });
+      return;
+    }
+    const lines = users.map(
+      (u) => `• \`${u.id}\` @${u.username ?? "unknown"} — *${u.role}* _(${u.source})_`,
+    );
+    await bot.sendMessage(
+      chatId,
+      `📋 *Authorised Users (${users.length})*\n\n${lines.join("\n")}`,
+      { parse_mode: "Markdown" },
+    );
+    return;
+  }
+
+  // ── Unknown command
+  const adminHelp = role === "admin"
+    ? "\n• `/adduser <id> <role>` — grant access\n• `/removeuser <id>` — revoke access\n• `/listusers` — list all users"
+    : "";
+  await bot.sendMessage(
+    chatId,
+    `ℹ️ *Available Commands*\n\n• \`/whoami\` — show your access level${adminHelp}`,
+    { parse_mode: "Markdown" },
+  );
+}
+
 async function answerQuery(
   chatId: number,
   userId: number,
   rawQuery: string,
   category: Category
 ): Promise<void> {
+  // ── Input validation ────────────────────────────────────────────────────
+  if (rawQuery.length > 500) {
+    void auditLog(userId, category, rawQuery.slice(0, 200), "error");
+    await bot.sendMessage(chatId, "❌ Query too long (max 500 characters). Please shorten your question.", { parse_mode: "Markdown" });
+    return;
+  }
+  if (detectPromptInjection(rawQuery)) {
+    void auditLog(userId, category, rawQuery.slice(0, 200), "injection_blocked");
+    logger.warn({ userId, query: rawQuery.slice(0, 100) }, "Prompt injection attempt detected");
+    await bot.sendMessage(chatId, "❌ Your query contains invalid patterns. Please rephrase.", { parse_mode: "Markdown" });
+    return;
+  }
+  // ───────────────────────────────────────────────────────────────────────
+
   // Strip Telegram @mentions (e.g. "@MSDBOT2030") so the bot handle never leaks into GPT.
   const query = rawQuery.replace(/@\S+/g, "").trim();
   // Match all real COW ID patterns in the database: COW###, CW<letter>###, GAT###
@@ -961,6 +1135,8 @@ SAUDI EVENTS CONTEXT — use ONLY when the user asks about patterns, spikes, or 
 
   const { payload: dataPayload, totalCount } = buildDataPayload(data);
 
+  void auditLog(userId, category, query, "gpt");
+
   let answer = "";
   try {
     const completion = await openai.chat.completions.create({
@@ -1050,9 +1226,20 @@ export async function setupBot(domain: string | undefined): Promise<void> {
   }
 
   const webhookUrl = `https://${domain}/api/telegram/webhook`;
+  const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET;
+
+  if (!secretToken) {
+    logger.warn("TELEGRAM_WEBHOOK_SECRET not set — webhook will be registered WITHOUT signature verification");
+  }
+
   try {
-    await bot.setWebHook(webhookUrl);
-    logger.info({ webhookUrl }, "Telegram webhook registered");
+    await bot.setWebHook(webhookUrl, {
+      secret_token: secretToken,
+    });
+    logger.info(
+      { webhookUrl, hasSecret: !!secretToken },
+      "Telegram webhook registered",
+    );
   } catch (err) {
     logger.error({ err }, "Failed to register Telegram webhook");
   }
