@@ -16,7 +16,7 @@ A live-updating ops dashboard that syncs three Google Sheets (CMDB, Energy Dashb
 - API: Express 5 (`artifacts/api-server`)
 - Frontend: React + Vite + shadcn/ui + Tailwind (`artifacts/sync-dashboard`)
 - DB: Supabase PostgreSQL (via `@supabase/supabase-js` over HTTPS)
-- Google Sheets: Replit Google Sheets connector (`@replit/connectors-sdk`)
+- Google Sheets: `googleapis` service account (portable) or `@replit/connectors-sdk` fallback (Replit-only)
 - Validation: Zod (`zod/v4`), generated via Orval from OpenAPI spec
 - Build: esbuild (CJS bundle for api-server)
 
@@ -39,6 +39,8 @@ A live-updating ops dashboard that syncs three Google Sheets (CMDB, Energy Dashb
 - **Contract-first API**: All routes defined in `lib/api-spec/openapi.yaml` first; run codegen after any change.
 - **Supabase table creation**: Tables must be created manually in the Supabase SQL Editor (https://supabase.com/dashboard/project/oawgfzgfufzyebowxlpx/sql/new) using `scripts/migrate-supabase.sql` — the Management API requires a PAT which is not stored here.
 - **CMDB/Energy use upsert on conflict**: CMDB conflicts on `cow_id`, Energy on `site`. COW Movement does full delete + re-insert on each sync.
+- **Google Sheets auth**: `sheets.ts` checks `GOOGLE_SERVICE_ACCOUNT_JSON` first (googleapis, portable). Falls back to Replit connector if unset. Set the env var to enable hosting on Railway/Render/any VPS.
+- **Deployment configs**: `railway.json` and `render.yaml` at repo root for Railway/Render deploys.
 
 ## Product
 
@@ -63,6 +65,7 @@ A live-updating ops dashboard that syncs three Google Sheets (CMDB, Energy Dashb
 - Spreadsheet 2 ID: `1bzcG70TopGRRm60NbKX4o3SCE2-QRUDFnY0Z4fYSjEM`
   - COW Movement: sheet "COW Movement tracker", headers at row 1 (2,756 rows)
 - Connector: `google-sheet` (Replit integration, connection ID: `conn_google-sheet_01KTTVR5X7VYQKFP26SVVTRXS3`)
+- Portable auth: set `GOOGLE_SERVICE_ACCOUNT_JSON` env var (full service account JSON, single line) to bypass Replit connector on any host
 
 ## User preferences
 

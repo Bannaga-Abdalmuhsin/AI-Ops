@@ -1,12 +1,51 @@
+import { google, type sheets_v4 } from "googleapis";
 import { ReplitConnectors } from "@replit/connectors-sdk";
-
-const connectors = new ReplitConnectors();
 
 const SHEET1_ID = "1uWbVwsJ6mgUl9WxJz-zbxMaiCW-dG3DI_9gvKkEca18";
 const SHEET2_ID = "1bzcG70TopGRRm60NbKX4o3SCE2-QRUDFnY0Z4fYSjEM";
 
+// ── Auth selection ────────────────────────────────────────────────────────────
+// Priority: GOOGLE_SERVICE_ACCOUNT_JSON env var
+//   → Works everywhere: Railway, Render, any VPS, and Replit.
+//   → Set this and the connector path becomes inactive.
+// Fallback: @replit/connectors-sdk OAuth proxy
+//   → Replit-hosted deployments only (no service account key needed there).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// undefined = not yet initialised; null = no service account configured
+let _sheetsClient: sheets_v4.Sheets | null | undefined = undefined;
+
+function getSheetsClient(): sheets_v4.Sheets | null {
+  if (_sheetsClient !== undefined) return _sheetsClient;
+  const saJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!saJson) {
+    _sheetsClient = null;
+    return null;
+  }
+  const credentials = JSON.parse(saJson) as object;
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+  });
+  _sheetsClient = google.sheets({ version: "v4", auth });
+  return _sheetsClient;
+}
+
+// Lazy Replit connector — only instantiated when service account is absent
+let _connectors: ReplitConnectors | null = null;
+
 async function readRange(spreadsheetId: string, range: string): Promise<string[][]> {
-  const res = await connectors.proxy(
+  const client = getSheetsClient();
+
+  if (client) {
+    // googleapis path — portable, works on any host
+    const res = await client.spreadsheets.values.get({ spreadsheetId, range });
+    return (res.data.values as string[][] | null | undefined) ?? [];
+  }
+
+  // Replit connector OAuth proxy — fallback for Replit-hosted deployments
+  if (!_connectors) _connectors = new ReplitConnectors();
+  const res = await _connectors.proxy(
     "google-sheet",
     `/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`,
     { method: "GET" }
@@ -98,7 +137,7 @@ export async function fetchCmdbRows(): Promise<CmdbRow[]> {
 
   return rows
     .filter(row => row[1]) // must have COW ID
-    .map((row, i) => {
+    .map((row) => {
       const raw: Record<string, string> = {};
       headers.forEach((h, idx) => {
         if (h && row[idx]) raw[h] = row[idx];
@@ -176,7 +215,7 @@ export async function fetchCowMovementRows(): Promise<CowMovementRow[]> {
   //  S=18 Region to       T=19 City/District    U=20 Vendor
   //  V=21 Priority        W=22 Cancelled        X=23 Month
   //
-  // Fetch in two batches to stay under the Replit connector response-body limit.
+  // Fetch in two batches to stay under response-body limits.
   // Sheet currently has ~2918 rows; upper bound set to 3100 for headroom.
   const [part1, part2] = await Promise.all([
     readRange(SHEET2_ID, "COW Movement tracker!A1:X1400"),   // header + rows 1–1399
