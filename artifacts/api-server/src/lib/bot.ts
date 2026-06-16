@@ -424,10 +424,19 @@ function detectCountQuery(query: string): boolean {
   const lower = query.toLowerCase();
   return (
     lower.includes("how many") ||
+    lower.includes("how much") ||
     lower.startsWith("total ") ||
     lower.includes(" total ") ||
     lower.includes("count of") ||
+    lower.includes("count sites") ||
+    lower.includes("count cows") ||
+    lower.includes("site count") ||
+    lower.includes("cow count") ||
+    lower.includes("give me count") ||
+    lower.includes("give me the count") ||
+    lower.includes("tell me how many") ||
     lower.includes("number of") ||
+    lower.includes("# of") ||
     /(^| )count( |$)/.test(lower)
   );
 }
@@ -721,7 +730,19 @@ async function answerQuery(
   // ───────────────────────────────────────────────────────────────────────
 
   // Strip Telegram @mentions (e.g. "@MSDBOT2030") so the bot handle never leaks into GPT.
-  const query = rawQuery.replace(/@\S+/g, "").trim();
+  // Then normalise terminology so downstream NLU works regardless of what synonym the user typed.
+  const query = rawQuery
+    .replace(/@\S+/g, "")       // remove @mentions
+    // COW ↔ Site synonyms — users say "site", "sites", "site list"; all mean COW records
+    .replace(/\bsites?\s+list\b/gi, "list COWs")
+    .replace(/\bsite\s+id\b/gi, "COW ID")
+    .replace(/\bsites?\b/gi, "COWs")
+    // Region code aliases — users may type the DB code directly
+    .replace(/\bWR\b/g, "Western")
+    .replace(/\bCR\b/g, "Central")
+    .replace(/\bER\b/g, "Eastern")
+    .replace(/\bSR\b/g, "Southern")
+    .trim();
   // Match all real COW ID patterns in the database: COW###, CW<letter>###, GAT###
   const cowMatch = query.match(/\b(COW\d+|CW[A-Z]\d+|GAT\d+)\b/i);
   const cowId = cowMatch?.[0]?.toUpperCase();
@@ -769,10 +790,21 @@ async function answerQuery(
       lower.includes("share cow") ||
       lower.includes("show all") ||
       lower.includes("show me all") ||
+      lower.includes("show me the") ||
       lower.includes("give me all") ||
+      lower.includes("give me sites") ||
+      lower.includes("give me cows") ||
+      lower.includes("give me the sites") ||
+      lower.includes("give me the cows") ||
+      lower.includes("get sites") ||
+      lower.includes("get cows") ||
+      lower.includes("show sites") ||
+      lower.includes("show cows") ||
       lower.includes("all sites") ||
       lower.includes("all cows") ||
-      lower.includes("all records")
+      lower.includes("all records") ||
+      lower.includes("cows in") ||
+      lower.includes("sites in")
     );
   }
   // ─────────────────────────────────────────────────────────────────────────
@@ -1160,8 +1192,20 @@ Never mention Supabase, APIs, N8N, or any technical tools.
 Never say "based on the dataset", "from the dataset provided", "from the sample", "as determined from", or any similar phrase referencing how the data was obtained. State facts directly.
 Reply in English only.
 
+TERMINOLOGY — always treat these as identical:
+- "COW" = "Site" (users may say either; they mean the same record)
+- "COW ID" = "Site ID" = "Site Code"
+- "COWs" = "Sites"
+
+REGION CODES — always translate to full names in your answers:
+- WR = Western Region
+- CR = Central Region
+- ER = Eastern Region
+- SR = Southern Region
+When a field contains WR/CR/ER/SR, display the full name (e.g. "Western Region"), never the code.
+
 MOVEMENT HISTORY FORMAT RULE:
-When listing movement history for a COW, use this exact compact format — nothing else:
+When listing movement history for a COW/Site, use this exact compact format — nothing else:
 
 *<COW_ID>* — <N> movements | <first_date> → <last_date>
 H: <half_count> | F: <full_count>
@@ -1176,28 +1220,26 @@ Rules:
 - Sort oldest-first.
 - No blank lines between rows. No extra text before or after.
 
-CMDB SITE ID LOOKUP RULE:
-When the user's message is just a site ID (e.g. "COW001" or "CWN104") with no other question:
-- If the dataset contains a record for that site ID, reply with a full info card using EXACTLY this format:
+SITE / COW ID LOOKUP RULE:
+When the user's message is just a site/COW ID (e.g. "COW001", "CWN104") with no other question:
+- If the dataset contains a record for that ID, reply with a full info card using EXACTLY this format:
 
-### 📊 COW Information
+### 📊 Site Information
 
-- COW ID: <cow_id>
+- Site ID: <cow_id>
 - Site Label: <site_label>
-- Region: <region>
+- Region: <region — translate WR/CR/ER/SR to full name>
 - District: <district>
 - City: <city>
 - Location: <location>
 - Site Status: <site_status>
 - Vendor: <vendor>
 - Technology: <technology>
-- Latitude: <latitude>
-- Longitude: <longitude>
 - First Deploying Date: <first_deploying_date>
 - Last Deploying Date: <last_deploying_date>
 
 - If the dataset is empty or does NOT contain a record for that site ID, reply ONLY with:
-❌ No COW site ID found matching "*<queried_id>*". Please check the ID and try again.
+❌ No Site ID found matching "*<queried_id>*". Please check the ID and try again.
 Never use "Not available" placeholder cards — only show the card when real data exists.`,
         },
         {
