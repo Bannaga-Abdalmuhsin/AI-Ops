@@ -177,9 +177,10 @@ export async function fetchCowMovementRows(): Promise<CowMovementRow[]> {
   //  V=21 Priority        W=22 Cancelled        X=23 Month
   //
   // Fetch in two batches to stay under the Replit connector response-body limit.
+  // Sheet currently has ~2918 rows; upper bound set to 3100 for headroom.
   const [part1, part2] = await Promise.all([
     readRange(SHEET2_ID, "COW Movement tracker!A1:X1400"),   // header + rows 1–1399
-    readRange(SHEET2_ID, "COW Movement tracker!A1401:X2756"), // rows 1400–2755 (no header)
+    readRange(SHEET2_ID, "COW Movement tracker!A1401:X3100"), // rows 1400–3100 (no header)
   ]);
   if (part1.length < 2) return [];
 
