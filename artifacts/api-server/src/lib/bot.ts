@@ -580,11 +580,101 @@ async function answerQuery(
   }
   // ─────────────────────────────────────────────────────────────────────────
 
+  // Detect listing intent: "list", "share sites", "show all", "give me all", etc.
+  function detectListQuery(q: string): boolean {
+    const lower = q.toLowerCase();
+    return (
+      lower.includes("list") ||
+      lower.includes("share site") ||
+      lower.includes("share cow") ||
+      lower.includes("show all") ||
+      lower.includes("show me all") ||
+      lower.includes("give me all") ||
+      lower.includes("all sites") ||
+      lower.includes("all cows") ||
+      lower.includes("all records")
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── CMDB list fast-path — returns full table, no GPT, no sampling ─────────
+  if (category === "cmdb" && !cowId && detectListQuery(query)) {
+    const { region, status, city } = extractTextFilters(query);
+    if (!city && !region && !status) {
+      await bot.sendMessage(
+        chatId,
+        `🔍 Please specify a city, region, or status to list sites.\n\nExample: \`list on-air sites in Riyadh\``,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+    let q = supabase
+      .from("cmdb")
+      .select("cow_id, site_label, location, site_status")
+      .order("cow_id", { ascending: true })
+      .limit(1000);
+    if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%,location.ilike.%${city}%`) as typeof q;
+    else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
+    if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
+    const { data: rows } = await q;
+
+    if (!rows || rows.length === 0) {
+      const label = city ?? region ?? status ?? "that filter";
+      await bot.sendMessage(
+        chatId,
+        `❌ No COW sites found for *${label}*. Check the spelling or try a broader query.`,
+        { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+      );
+      return;
+    }
+
+    const filterLabel = city
+      ? city.charAt(0).toUpperCase() + city.slice(1)
+      : region
+      ? region.charAt(0).toUpperCase() + region.slice(1) + " Region"
+      : "";
+    const statusLabel = status ? ` — ${status}` : "";
+    const header = `📋 *COW Sites in ${filterLabel}${statusLabel}*\n_Total: ${rows.length} sites_\n\n`;
+
+    // Format: "1. COW001 — Location (truncated)"
+    const lines = (rows as Array<{ cow_id?: string; site_label?: string; location?: string; site_status?: string }>).map(
+      (r, i) => {
+        const loc = (r.location ?? r.site_label ?? "—").slice(0, 40);
+        return `${i + 1}. *${r.cow_id}* — ${loc}`;
+      }
+    );
+
+    // Split into chunks to stay under Telegram's 4096-char limit
+    const chunks: string[][] = [];
+    let chunk: string[] = [];
+    let len = 0;
+    for (const line of lines) {
+      if (len + line.length + 1 > 3400) {
+        chunks.push(chunk);
+        chunk = [];
+        len = 0;
+      }
+      chunk.push(line);
+      len += line.length + 1;
+    }
+    if (chunk.length > 0) chunks.push(chunk);
+
+    for (let i = 0; i < chunks.length; i++) {
+      const prefix = i === 0 ? header : `_(continued ${i + 1}/${chunks.length})_\n\n`;
+      await bot.sendMessage(chatId, prefix + chunks[i].join("\n"), {
+        parse_mode: "Markdown",
+        reply_markup: i === chunks.length - 1 ? continueKeyboard(category) : undefined,
+      });
+    }
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // ── CMDB count fast-path — exact Supabase count, no GPT ──────────────────
   if (category === "cmdb" && !cowId && detectCountQuery(query)) {
     const { region, status, city } = extractTextFilters(query);
     let q = supabase.from("cmdb").select("*", { count: "exact", head: true });
-    if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%`) as typeof q;
+    if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%,location.ilike.%${city}%`) as typeof q;
     else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
     if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
     const { count } = await q;
@@ -797,9 +887,7 @@ async function answerQuery(
           );
           return;
         }
-        // City filter is more specific — filter on city/district columns.
-        // Region filter applies when no city is found.
-        if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%`) as typeof q;
+        if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%,location.ilike.%${city}%`) as typeof q;
         else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
         if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
         q = q.limit(1000) as typeof q;
