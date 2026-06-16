@@ -1,2 +1,4 @@
 - [Supabase connectivity](supabase-connectivity.md) — Direct PostgreSQL port 5432 blocked in Replit; use supabase-js over HTTPS only.
 - [Supabase table creation](supabase-table-creation.md) — Tables can't be created programmatically (Management API needs PAT); use SQL Editor manually.
+- [Movement region codes](movement-region-codes.md) — cow_movement uses 2-letter codes (WR/CR/ER/SR); CMDB uses full words (West/Central/EAST/South); bot uses separate filter paths.
+- [Telegram webhook setup](telegram-webhook-setup.md) — Production domain is sheet-sync-bannagaaltieb1.replit.app; secret_token must be hex-only (A-Z a-z 0-9 _ - only); TELEGRAM_WEBHOOK_DOMAIN env var drives registration.

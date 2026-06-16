@@ -248,28 +248,34 @@ async function handleCallbackQuery(
 // Extract region, city, and status keywords from free-text queries for aggregate filtering.
 // Region is used for movement (region_from/region_to columns).
 // City is used for CMDB (city/district columns) — more specific than region.
-function extractTextFilters(q: string): { region?: string; status?: string; city?: string } {
+function extractTextFilters(q: string): { region?: string; regionLabel?: string; regionSearch?: string; status?: string; city?: string } {
   const lower = q.toLowerCase();
 
+  // Maps user keywords → the exact region code stored in the DB (region_from / region_to).
+  // DB uses 2-letter abbreviations: CR, WR, ER, SR.
   const REGION_MAP: [string, string][] = [
-    ["western", "west"], ["west", "west"],
-    ["eastern", "east"], ["east", "east"],
-    ["central", "central"],
-    ["northern", "north"], ["north", "north"],
-    ["southern", "south"], ["south", "south"],
-    ["riyadh", "riyadh"],
-    ["makkah", "makkah"], ["mecca", "makkah"],
-    ["madinah", "madinah"], ["medina", "madinah"],
-    ["jeddah", "jeddah"], ["jedda", "jeddah"],
-    ["tabuk", "tabuk"], ["qassim", "qassim"],
-    ["hail", "hail"], ["najran", "najran"],
-    ["jizan", "jizan"], ["asir", "asir"], ["baha", "baha"],
+    ["western",  "WR"], ["west",    "WR"],
+    ["eastern",  "ER"], ["east",    "ER"],
+    ["central",  "CR"],
+    ["northern", "NR"], ["north",   "NR"],
+    ["southern", "SR"], ["south",   "SR"],
   ];
+
+  // Human-readable labels for display in bot messages.
+  const REGION_LABELS: Record<string, string> = {
+    WR: "Western", ER: "Eastern", CR: "Central", SR: "Southern", NR: "Northern",
+  };
+  // ilike-friendly root words for CMDB (which stores "West", "EAST", "Central", "South").
+  const REGION_SEARCH: Record<string, string> = {
+    WR: "west", ER: "east", CR: "central", SR: "south", NR: "north",
+  };
 
   let region: string | undefined;
   for (const [term, pattern] of REGION_MAP) {
     if (lower.includes(term)) { region = pattern; break; }
   }
+  const regionLabel = region ? (REGION_LABELS[region] ?? region) : undefined;
+  const regionSearch = region ? (REGION_SEARCH[region] ?? region.toLowerCase()) : undefined;
 
   // City-level filter — applied to city/district columns in CMDB.
   // Covers Saudi cities not expressible as a broad region.
@@ -313,7 +319,7 @@ function extractTextFilters(q: string): { region?: string; status?: string; city
   if (lower.match(/on[\s-]?air/)) status = "On-Air";
   else if (lower.match(/off[\s-]?air/)) status = "Off-Air";
 
-  return { region, status, city };
+  return { region, regionLabel, regionSearch, status, city };
 }
 
 // Build a concise data payload for GPT: all rows when small, count + sample when large.
@@ -773,8 +779,8 @@ async function answerQuery(
 
   // ── CMDB list fast-path — returns full table, no GPT, no sampling ─────────
   if (category === "cmdb" && !cowId && detectListQuery(query)) {
-    const { region, status, city } = extractTextFilters(query);
-    if (!city && !region && !status) {
+    const { regionSearch, status, city } = extractTextFilters(query);
+    if (!city && !regionSearch && !status) {
       await bot.sendMessage(
         chatId,
         `🔍 Please specify a city, region, or status to list sites.\n\nExample: \`list on-air sites in Riyadh\``,
@@ -788,12 +794,12 @@ async function answerQuery(
       .order("cow_id", { ascending: true })
       .limit(1000);
     if (city) q = q.ilike("city", `%${city}%`) as typeof q;
-    else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
+    else if (regionSearch) q = q.ilike("region", `%${regionSearch}%`) as typeof q;
     if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
     const { data: rows } = await q;
 
     if (!rows || rows.length === 0) {
-      const label = city ?? region ?? status ?? "that filter";
+      const label = city ?? regionSearch ?? status ?? "that filter";
       await bot.sendMessage(
         chatId,
         `❌ No COW sites found for *${label}*. Check the spelling or try a broader query.`,
@@ -804,8 +810,8 @@ async function answerQuery(
 
     const filterLabel = city
       ? city.charAt(0).toUpperCase() + city.slice(1)
-      : region
-      ? region.charAt(0).toUpperCase() + region.slice(1) + " Region"
+      : regionSearch
+      ? regionSearch.charAt(0).toUpperCase() + regionSearch.slice(1) + " Region"
       : "";
     const statusLabel = status ? ` — ${status}` : "";
     const header = `📋 *COW Sites in ${filterLabel}${statusLabel}*\n_Total: ${rows.length} sites_\n\n`;
@@ -843,14 +849,14 @@ async function answerQuery(
 
   // ── CMDB count fast-path — exact Supabase count, no GPT ──────────────────
   if (category === "cmdb" && !cowId && detectCountQuery(query)) {
-    const { region, status, city } = extractTextFilters(query);
+    const { region, regionLabel, regionSearch, status, city } = extractTextFilters(query);
     let q = supabase.from("cmdb").select("*", { count: "exact", head: true });
     if (city) q = q.ilike("city", `%${city}%`) as typeof q;
-    else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
+    else if (regionSearch) q = q.ilike("region", `%${regionSearch}%`) as typeof q;
     if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
     const { count } = await q;
     const cityLabel = city ? `in *${city.charAt(0).toUpperCase() + city.slice(1)}*` :
-      region ? `in *${region}* region` : "total";
+      regionLabel ? `in *${regionLabel}* region` : "total";
     const statusLabel = status ? `*${status}* COWs` : "COWs";
     await bot.sendMessage(
       chatId,
@@ -879,20 +885,20 @@ async function answerQuery(
 
     // 0b. Exact count for a region (no cowId) — no row fetch, no limit cap
     if (!cowId && detectCountQuery(query)) {
-      const { region } = extractTextFilters(query);
+      const { region, regionLabel } = extractTextFilters(query);
       let q = supabase
         .from("cow_movement")
         .select("*", { count: "exact", head: true });
       if (region) {
         q = q.or(
-          `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
+          `region_from.eq.${region},region_to.eq.${region}`
         ) as typeof q;
       }
       const { count } = await q;
-      const regionLabel = region ? `*${region}* region` : "all regions";
+      const displayLabel = regionLabel ? `*${regionLabel}* region` : "all regions";
       await bot.sendMessage(
         chatId,
-        `📊 Total movements in ${regionLabel}: *${(count ?? 0).toLocaleString()}*`,
+        `📊 Total movements in ${displayLabel}: *${(count ?? 0).toLocaleString()}*`,
         { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
       );
       return;
@@ -1047,10 +1053,10 @@ async function answerQuery(
       if (cowId) {
         q = q.eq("cow_id", cowId).limit(10) as typeof q;
       } else {
-        const { region, status, city } = extractTextFilters(query);
+        const { regionSearch, status, city } = extractTextFilters(query);
         // Guard: require at least one meaningful filter — if the query has no recognisable
         // COW ID, city, region, or status keyword, return guidance instead of dumping all records to GPT.
-        if (!city && !region && !status) {
+        if (!city && !regionSearch && !status) {
           await bot.sendMessage(
             chatId,
             `🔍 Please include a COW ID, city, region, or status in your query.\n\nExamples:\n• \`COW545 status\`\n• \`CWH186 location\`\n• \`on-air COWs in Dammam\`\n• \`off-air in Western region\``,
@@ -1059,7 +1065,7 @@ async function answerQuery(
           return;
         }
         if (city) q = q.ilike("city", `%${city}%`) as typeof q;
-        else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
+        else if (regionSearch) q = q.ilike("region", `%${regionSearch}%`) as typeof q;
         if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
         q = q.limit(1000) as typeof q;
       }
@@ -1092,7 +1098,7 @@ async function answerQuery(
         const { region } = extractTextFilters(query);
         if (region) {
           q = q.or(
-            `region_from.ilike.%${region}%,region_to.ilike.%${region}%`
+            `region_from.eq.${region},region_to.eq.${region}`
           ) as typeof q;
         }
         q = q.limit(1000) as typeof q;
