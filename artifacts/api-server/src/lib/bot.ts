@@ -190,9 +190,10 @@ async function handleCallbackQuery(
   );
 }
 
-// Extract region and status keywords from free-text queries for aggregate filtering.
-// Region is normalised to its DB root so ilike.%root% matches WEST / Western / Western Region.
-function extractTextFilters(q: string): { region?: string; status?: string } {
+// Extract region, city, and status keywords from free-text queries for aggregate filtering.
+// Region is used for movement (region_from/region_to columns).
+// City is used for CMDB (city/district columns) — more specific than region.
+function extractTextFilters(q: string): { region?: string; status?: string; city?: string } {
   const lower = q.toLowerCase();
 
   const REGION_MAP: [string, string][] = [
@@ -215,11 +216,49 @@ function extractTextFilters(q: string): { region?: string; status?: string } {
     if (lower.includes(term)) { region = pattern; break; }
   }
 
+  // City-level filter — applied to city/district columns in CMDB.
+  // Covers Saudi cities not expressible as a broad region.
+  const CITY_MAP: [string, string][] = [
+    ["dammam", "dammam"],
+    ["khobar", "khobar"], ["al khobar", "khobar"],
+    ["dhahran", "dhahran"],
+    ["qatif", "qatif"],
+    ["jubail", "jubail"],
+    ["hofuf", "hofuf"], ["al hofuf", "hofuf"],
+    ["khafji", "khafji"],
+    ["abqiq", "abqiq"],
+    ["hafer", "hafer"],   // Hafer al-Batin
+    ["khamis", "khamis"], // Khamis Mushait
+    ["abha", "abha"],
+    ["yanbu", "yanbu"],
+    ["taif", "taif"],
+    ["muzahmiya", "muzahmiya"],
+    ["turaif", "turaif"],
+    ["arar", "arar"],
+    ["jouf", "jouf"], ["al jouf", "jouf"],
+    ["neom", "neom"],
+    ["buraida", "buraida"], ["burayda", "buraida"],
+    ["wadi", "wadi"],
+    ["najran", "najran"],
+    ["jizan", "jizan"],
+    ["hail", "hail"],
+    ["jeddah", "jeddah"], ["jedda", "jeddah"],
+    ["makkah", "makkah"], ["mecca", "makkah"],
+    ["madinah", "madinah"], ["medina", "madinah"],
+    ["riyadh", "riyadh"],
+    ["tabuk", "tabuk"],
+  ];
+
+  let city: string | undefined;
+  for (const [term, pattern] of CITY_MAP) {
+    if (lower.includes(term)) { city = pattern; break; }
+  }
+
   let status: string | undefined;
   if (lower.match(/on[\s-]?air/)) status = "On-Air";
   else if (lower.match(/off[\s-]?air/)) status = "Off-Air";
 
-  return { region, status };
+  return { region, status, city };
 }
 
 // Build a concise data payload for GPT: all rows when small, count + sample when large.
@@ -461,6 +500,26 @@ async function answerQuery(
   }
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ── CMDB count fast-path — exact Supabase count, no GPT ──────────────────
+  if (category === "cmdb" && !cowId && detectCountQuery(query)) {
+    const { region, status, city } = extractTextFilters(query);
+    let q = supabase.from("cmdb").select("*", { count: "exact", head: true });
+    if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%`) as typeof q;
+    else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
+    if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
+    const { count } = await q;
+    const cityLabel = city ? `in *${city.charAt(0).toUpperCase() + city.slice(1)}*` :
+      region ? `in *${region}* region` : "total";
+    const statusLabel = status ? `*${status}* COWs` : "COWs";
+    await bot.sendMessage(
+      chatId,
+      `📊 ${statusLabel} ${cityLabel}: *${(count ?? 0).toLocaleString()}*`,
+      { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
+    );
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // ── Analytics fast-paths (movement only — no GPT needed) ─────────────────
   if (category === "movement") {
     // 0a. Exact count for a specific COW — bypass GPT entirely
@@ -583,18 +642,21 @@ async function answerQuery(
       if (cowId) {
         q = q.eq("cow_id", cowId).limit(10) as typeof q;
       } else {
-        const { region, status } = extractTextFilters(query);
+        const { region, status, city } = extractTextFilters(query);
         // Guard: require at least one meaningful filter — if the query has no recognisable
-        // COW ID, region, or status keyword, return guidance instead of dumping all records to GPT.
-        if (!region && !status) {
+        // COW ID, city, region, or status keyword, return guidance instead of dumping all records to GPT.
+        if (!city && !region && !status) {
           await bot.sendMessage(
             chatId,
-            `🔍 Please include a COW ID, region, or status in your query.\n\nExamples:\n• \`COW545 status\`\n• \`CWH186 location\`\n• \`on-air COWs in Central region\`\n• \`off-air in Western region\``,
+            `🔍 Please include a COW ID, city, region, or status in your query.\n\nExamples:\n• \`COW545 status\`\n• \`CWH186 location\`\n• \`on-air COWs in Dammam\`\n• \`off-air in Western region\``,
             { parse_mode: "Markdown", reply_markup: continueKeyboard(category) }
           );
           return;
         }
-        if (region) q = q.ilike("region", `%${region}%`) as typeof q;
+        // City filter is more specific — filter on city/district columns.
+        // Region filter applies when no city is found.
+        if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%`) as typeof q;
+        else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
         if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
         q = q.limit(1000) as typeof q;
       }
