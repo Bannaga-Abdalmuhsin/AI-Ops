@@ -364,7 +364,8 @@ function detectCountQuery(query: string): boolean {
     lower.startsWith("total ") ||
     lower.includes(" total ") ||
     lower.includes("count of") ||
-    lower.includes("number of")
+    lower.includes("number of") ||
+    /(^| )count( |$)/.test(lower)
   );
 }
 
@@ -613,7 +614,7 @@ async function answerQuery(
       .select("cow_id, site_label, location, site_status")
       .order("cow_id", { ascending: true })
       .limit(1000);
-    if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%,location.ilike.%${city}%`) as typeof q;
+    if (city) q = q.ilike("city", `%${city}%`) as typeof q;
     else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
     if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
     const { data: rows } = await q;
@@ -636,12 +637,9 @@ async function answerQuery(
     const statusLabel = status ? ` — ${status}` : "";
     const header = `📋 *COW Sites in ${filterLabel}${statusLabel}*\n_Total: ${rows.length} sites_\n\n`;
 
-    // Format: "1. COW001 — Location (truncated)"
+    // Format: "1. COW001" — one column only (cow_id is the unique site identifier)
     const lines = (rows as Array<{ cow_id?: string; site_label?: string; location?: string; site_status?: string }>).map(
-      (r, i) => {
-        const loc = (r.location ?? r.site_label ?? "—").slice(0, 40);
-        return `${i + 1}. *${r.cow_id}* — ${loc}`;
-      }
+      (r, i) => `${i + 1}. *${r.cow_id ?? "—"}*`
     );
 
     // Split into chunks to stay under Telegram's 4096-char limit
@@ -674,7 +672,7 @@ async function answerQuery(
   if (category === "cmdb" && !cowId && detectCountQuery(query)) {
     const { region, status, city } = extractTextFilters(query);
     let q = supabase.from("cmdb").select("*", { count: "exact", head: true });
-    if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%,location.ilike.%${city}%`) as typeof q;
+    if (city) q = q.ilike("city", `%${city}%`) as typeof q;
     else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
     if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
     const { count } = await q;
@@ -887,7 +885,7 @@ async function answerQuery(
           );
           return;
         }
-        if (city) q = q.or(`city.ilike.%${city}%,district.ilike.%${city}%,location.ilike.%${city}%`) as typeof q;
+        if (city) q = q.ilike("city", `%${city}%`) as typeof q;
         else if (region) q = q.ilike("region", `%${region}%`) as typeof q;
         if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
         q = q.limit(1000) as typeof q;
