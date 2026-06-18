@@ -93,9 +93,15 @@ interface UserSession {
 
 const sessions = new Map<number, UserSession>();
 
-// Users who have been prompted for the access password but haven't replied yet.
-// Cleared on correct password (registered) or on server restart.
+// Unknown users who have been shown the welcome/password prompt (self-registration).
 const pendingRegistration = new Set<number>();
+
+// Whitelisted users (found in bot_users) who have been prompted for the password gate.
+const pendingVerification = new Set<number>();
+
+// Whitelisted users who have passed the password gate this session.
+// Cleared on server restart — one re-entry per restart is acceptable.
+const activatedUsers = new Set<number>();
 
 const GREETING = `Hi 👋 I'm *ACES MSD* — stc COW Project Assistant.
 
@@ -167,6 +173,7 @@ async function handleMessage(msg: TelegramBot.Message): Promise<void> {
         pendingRegistration.delete(userId);
         try {
           await addUser(userId, "viewer", 0, username);
+          activatedUsers.add(userId); // mark as password-verified for this session
           void auditLog(userId, null, "self-registered", "admin");
           await bot.sendMessage(
             chatId,
@@ -202,6 +209,46 @@ async function handleMessage(msg: TelegramBot.Message): Promise<void> {
       { parse_mode: "Markdown" },
     );
     return;
+  }
+  // ─────────────────────────────────────────────────────────────────────
+
+  // ── First-login password gate for whitelisted (admin-added) users ─────
+  // Env admins bypass this gate entirely. All other whitelisted users must
+  // enter the team password once per server session before getting access.
+  {
+    const BOT_PASSWORD = (process.env.BOT_PASSWORD ?? "").trim();
+    if (BOT_PASSWORD && !isEnvAdmin(userId) && !activatedUsers.has(userId)) {
+      if (pendingVerification.has(userId)) {
+        if (text === BOT_PASSWORD) {
+          pendingVerification.delete(userId);
+          activatedUsers.add(userId);
+          await bot.sendMessage(
+            chatId,
+            `✅ *Password verified!*\n\nWelcome to *ACES MSD* — stc COW Project Assistant.`,
+            { parse_mode: "Markdown" },
+          );
+          await bot.sendMessage(chatId, GREETING, {
+            parse_mode: "Markdown",
+            reply_markup: MAIN_KEYBOARD,
+          });
+        } else {
+          await bot.sendMessage(
+            chatId,
+            "❌ Incorrect password. Please try again:",
+            { parse_mode: "Markdown" },
+          );
+        }
+        return;
+      }
+      // First message from a whitelisted user — ask for password
+      pendingVerification.add(userId);
+      await bot.sendMessage(
+        chatId,
+        `🔐 You have been added to *ACES MSD* — stc COW Project Assistant.\n\nPlease enter the team access password to continue:`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
   }
   // ─────────────────────────────────────────────────────────────────────
 
