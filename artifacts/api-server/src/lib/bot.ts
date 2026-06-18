@@ -93,6 +93,10 @@ interface UserSession {
 
 const sessions = new Map<number, UserSession>();
 
+// Users who have been prompted for the access password but haven't replied yet.
+// Cleared on correct password (registered) or on server restart.
+const pendingRegistration = new Set<number>();
+
 const GREETING = `Hi 👋 I'm *ACES MSD* — stc COW Project Assistant.
 
 Select a database to query:`;
@@ -140,13 +144,61 @@ async function handleMessage(msg: TelegramBot.Message): Promise<void> {
   const username = msg.from?.username;
   const text = (msg.text ?? "").trim();
 
-  // ── Role-based access control ─────────────────────────────────────────
+  // ── Role-based access control + self-registration ────────────────────
   const role = await getUserRole(userId);
   if (!role) {
-    void auditLog(userId, null, text.slice(0, 100), "auth_fail");
+    const BOT_PASSWORD = (process.env.BOT_PASSWORD ?? "").trim();
+
+    // ── Password-based self-registration ──────────────────────────────
+    if (!BOT_PASSWORD) {
+      // No password configured — hard deny (admin must use /adduser)
+      void auditLog(userId, null, text.slice(0, 100), "auth_fail");
+      await bot.sendMessage(
+        chatId,
+        "⛔ *Access Denied*\n\nContact your STC system administrator to request access.",
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    if (pendingRegistration.has(userId)) {
+      // User was prompted for password — verify it now
+      if (text === BOT_PASSWORD) {
+        pendingRegistration.delete(userId);
+        try {
+          await addUser(userId, "viewer", 0, username);
+          void auditLog(userId, null, "self-registered", "admin");
+          await bot.sendMessage(
+            chatId,
+            `✅ *Access granted!*\n\nWelcome to *ACES MSD* — stc COW Project Assistant.\nYou have been registered as a viewer.`,
+            { parse_mode: "Markdown" },
+          );
+          await bot.sendMessage(chatId, GREETING, {
+            parse_mode: "Markdown",
+            reply_markup: MAIN_KEYBOARD,
+          });
+        } catch {
+          await bot.sendMessage(
+            chatId,
+            "❌ Registration failed — the access table may not exist yet.\n\nContact your STC system administrator.",
+            { parse_mode: "Markdown" },
+          );
+        }
+      } else {
+        await bot.sendMessage(
+          chatId,
+          "❌ Incorrect password. Please try again:",
+          { parse_mode: "Markdown" },
+        );
+      }
+      return;
+    }
+
+    // First contact — prompt for registration password
+    pendingRegistration.add(userId);
     await bot.sendMessage(
       chatId,
-      "⛔ *Access Denied*\n\nYou are not authorised to use this bot.\n\nContact your STC system administrator to request access.",
+      `👋 Welcome to *ACES MSD* — stc COW Project Assistant.\n\nPlease enter the team access password to register:`,
       { parse_mode: "Markdown" },
     );
     return;
