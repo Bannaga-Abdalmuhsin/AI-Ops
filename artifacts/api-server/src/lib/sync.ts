@@ -157,13 +157,17 @@ export async function syncEnergyDashboard(): Promise<TableSyncResult> {
 
 export async function syncCowMovement(): Promise<TableSyncResult> {
   const start = Date.now();
+  const client = await pool.connect();
   try {
     logger.info("Syncing COW Movement History...");
     const rows = await fetchCowMovementRows();
 
     if (rows.length === 0) {
       const duration = Date.now() - start;
-      await logSync("cow_movement", "ok", 0, null, duration);
+      await client.query(
+        `INSERT INTO sync_log (table_name, rows_synced, status, error_message, duration_ms) VALUES ($1,$2,$3,$4,$5)`,
+        ["cow_movement", 0, "ok", null, duration],
+      );
       return { table_name: "cow_movement", rows_synced: 0, success: true, error: null, duration_ms: duration };
     }
 
@@ -174,8 +178,10 @@ export async function syncCowMovement(): Promise<TableSyncResult> {
       "raw_data", "synced_at",
     ];
 
-    // Delete all existing rows and re-insert (movement history is always full replace)
-    await pool.query("DELETE FROM cow_movement");
+    // Use a single client for DELETE + INSERT + logSync so the connection
+    // never goes idle between steps (prevents "connection terminated" on large datasets)
+    await client.query("BEGIN");
+    await client.query("DELETE FROM cow_movement");
 
     const insertRows = rows
       .filter((r) => r.cow_id)
@@ -184,20 +190,31 @@ export async function syncCowMovement(): Promise<TableSyncResult> {
     let inserted = 0;
     for (const batch of chunk(insertRows, 200)) {
       const { valueSql, params } = buildMultiInsert(MOVEMENT_COLS, batch);
-      await pool.query(`INSERT INTO cow_movement ${valueSql}`, params);
+      await client.query(`INSERT INTO cow_movement ${valueSql}`, params);
       inserted += batch.length;
     }
 
+    await client.query("COMMIT");
+
     const duration = Date.now() - start;
-    await logSync("cow_movement", "ok", inserted, null, duration);
+    await client.query(
+      `INSERT INTO sync_log (table_name, rows_synced, status, error_message, duration_ms) VALUES ($1,$2,$3,$4,$5)`,
+      ["cow_movement", inserted, "ok", null, duration],
+    );
     logger.info({ rows: inserted }, "COW Movement sync complete");
     return { table_name: "cow_movement", rows_synced: inserted, success: true, error: null, duration_ms: duration };
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
     const msg = err instanceof Error ? err.message : String(err);
     const duration = Date.now() - start;
-    await logSync("cow_movement", "error", null, msg, duration);
+    await client.query(
+      `INSERT INTO sync_log (table_name, rows_synced, status, error_message, duration_ms) VALUES ($1,$2,$3,$4,$5)`,
+      ["cow_movement", null, "error", msg, duration],
+    ).catch(() => {});
     logger.error({ err }, "COW Movement sync failed");
     return { table_name: "cow_movement", rows_synced: 0, success: false, error: msg, duration_ms: duration };
+  } finally {
+    client.release();
   }
 }
 
