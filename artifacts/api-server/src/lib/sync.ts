@@ -1,4 +1,4 @@
-import { supabase } from "./supabase.js";
+import { pool } from "./db.js";
 import { fetchCmdbRows, fetchEnergyRows, fetchCowMovementRows } from "./sheets.js";
 import { logger } from "./logger.js";
 
@@ -12,20 +12,40 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return chunks;
 }
 
+/**
+ * Build a multi-row INSERT with sequential $N placeholders.
+ * Returns the SQL fragment "(col1, col2, ...) VALUES ($1,$2,...),($3,$4,...)" and params array.
+ */
+function buildMultiInsert(
+  columns: string[],
+  rows: Record<string, unknown>[],
+): { valueSql: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const valueSets = rows.map((row) => {
+    const placeholders = columns.map((col) => {
+      params.push(row[col] ?? null);
+      return `$${params.length}`;
+    });
+    return `(${placeholders.join(", ")})`;
+  });
+  return {
+    valueSql: `(${columns.join(", ")}) VALUES ${valueSets.join(", ")}`,
+    params,
+  };
+}
+
 async function logSync(
   tableName: string,
   status: "ok" | "error",
   rowsSynced: number | null,
   errorMessage: string | null,
-  durationMs: number
+  durationMs: number,
 ): Promise<void> {
-  await supabase.from("sync_log").insert({
-    table_name: tableName,
-    rows_synced: rowsSynced,
-    status,
-    error_message: errorMessage,
-    duration_ms: durationMs,
-  });
+  await pool.query(
+    `INSERT INTO sync_log (table_name, rows_synced, status, error_message, duration_ms)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [tableName, rowsSynced, status, errorMessage, durationMs],
+  );
 }
 
 export interface TableSyncResult {
@@ -48,33 +68,27 @@ export async function syncCmdb(): Promise<TableSyncResult> {
       return { table_name: "cmdb", rows_synced: 0, success: true, error: null, duration_ms: duration };
     }
 
+    const CMDB_COLS = [
+      "row_num", "cow_id", "site_label", "ebu_royal", "region", "district",
+      "city", "location", "latitude", "longitude", "site_status", "vendor",
+      "last_deploying_date", "first_deploying_date", "cow_old_new", "technology",
+      "raw_data", "synced_at",
+    ];
+
     const upsertRows = rows
-      .filter(r => r.cow_id)
-      .map(r => ({
-        row_num: r.row_num,
-        cow_id: r.cow_id,
-        site_label: r.site_label,
-        ebu_royal: r.ebu_royal,
-        region: r.region,
-        district: r.district,
-        city: r.city,
-        location: r.location,
-        latitude: r.latitude,
-        longitude: r.longitude,
-        site_status: r.site_status,
-        vendor: r.vendor,
-        last_deploying_date: r.last_deploying_date,
-        first_deploying_date: r.first_deploying_date,
-        cow_old_new: r.cow_old_new,
-        technology: r.technology,
-        raw_data: r.raw_data,
-        synced_at: new Date().toISOString(),
-      }));
+      .filter((r) => r.cow_id)
+      .map((r) => ({ ...r, synced_at: new Date().toISOString() }));
 
     let upserted = 0;
     for (const batch of chunk(upsertRows, 100)) {
-      const { error } = await supabase.from("cmdb").upsert(batch, { onConflict: "cow_id" });
-      if (error) throw new Error(error.message);
+      const { valueSql, params } = buildMultiInsert(CMDB_COLS, batch);
+      const updateSet = CMDB_COLS.filter((c) => c !== "cow_id")
+        .map((c) => `${c} = EXCLUDED.${c}`)
+        .join(", ");
+      await pool.query(
+        `INSERT INTO cmdb ${valueSql} ON CONFLICT (cow_id) DO UPDATE SET ${updateSet}`,
+        params,
+      );
       upserted += batch.length;
     }
 
@@ -103,35 +117,28 @@ export async function syncEnergyDashboard(): Promise<TableSyncResult> {
       return { table_name: "energy_dashboard", rows_synced: 0, success: true, error: null, duration_ms: duration };
     }
 
+    const ENERGY_COLS = [
+      "row_num", "site", "vendor", "region_name", "district_name", "city_name",
+      "power_source", "generator_capacity", "technology", "cow_status",
+      "total_on_air_days", "latitude", "longitude", "tank_capacity",
+      "fuel_tank_level_pct", "last_fueling_date", "last_fueling_qty",
+      "next_fueling_plan", "raw_data", "synced_at",
+    ];
+
     const upsertRows = rows
-      .filter(r => r.site)
-      .map(r => ({
-        row_num: r.row_num,
-        site: r.site,
-        vendor: r.vendor,
-        region_name: r.region_name,
-        district_name: r.district_name,
-        city_name: r.city_name,
-        power_source: r.power_source,
-        generator_capacity: r.generator_capacity,
-        technology: r.technology,
-        cow_status: r.cow_status,
-        total_on_air_days: r.total_on_air_days,
-        latitude: r.latitude,
-        longitude: r.longitude,
-        tank_capacity: r.tank_capacity,
-        fuel_tank_level_pct: r.fuel_tank_level_pct,
-        last_fueling_date: r.last_fueling_date,
-        last_fueling_qty: r.last_fueling_qty,
-        next_fueling_plan: r.next_fueling_plan,
-        raw_data: r.raw_data,
-        synced_at: new Date().toISOString(),
-      }));
+      .filter((r) => r.site)
+      .map((r) => ({ ...r, synced_at: new Date().toISOString() }));
 
     let upserted = 0;
     for (const batch of chunk(upsertRows, 100)) {
-      const { error } = await supabase.from("energy_dashboard").upsert(batch, { onConflict: "site" });
-      if (error) throw new Error(error.message);
+      const { valueSql, params } = buildMultiInsert(ENERGY_COLS, batch);
+      const updateSet = ENERGY_COLS.filter((c) => c !== "site")
+        .map((c) => `${c} = EXCLUDED.${c}`)
+        .join(", ");
+      await pool.query(
+        `INSERT INTO energy_dashboard ${valueSql} ON CONFLICT (site) DO UPDATE SET ${updateSet}`,
+        params,
+      );
       upserted += batch.length;
     }
 
@@ -160,36 +167,24 @@ export async function syncCowMovement(): Promise<TableSyncResult> {
       return { table_name: "cow_movement", rows_synced: 0, success: true, error: null, duration_ms: duration };
     }
 
-    // Delete all existing and re-insert (movement history)
-    const { error: delErr } = await supabase.from("cow_movement").delete().neq("id", 0);
-    if (delErr) throw new Error(delErr.message);
+    const MOVEMENT_COLS = [
+      "cow_id", "site_label", "moved_date", "moved_month_year", "from_location",
+      "to_location", "from_latitude", "from_longitude", "to_latitude", "to_longitude",
+      "distance", "movement_type", "region_from", "region_to", "vendor",
+      "raw_data", "synced_at",
+    ];
+
+    // Delete all existing rows and re-insert (movement history is always full replace)
+    await pool.query("DELETE FROM cow_movement");
 
     const insertRows = rows
-      .filter(r => r.cow_id)
-      .map(r => ({
-        cow_id: r.cow_id,
-        site_label: r.site_label,
-        moved_date: r.moved_date,
-        moved_month_year: r.moved_month_year,
-        from_location: r.from_location,
-        to_location: r.to_location,
-        from_latitude: r.from_latitude,
-        from_longitude: r.from_longitude,
-        to_latitude: r.to_latitude,
-        to_longitude: r.to_longitude,
-        distance: r.distance,
-        movement_type: r.movement_type,
-        region_from: r.region_from,
-        region_to: r.region_to,
-        vendor: r.vendor,
-        raw_data: r.raw_data,
-        synced_at: new Date().toISOString(),
-      }));
+      .filter((r) => r.cow_id)
+      .map((r) => ({ ...r, synced_at: new Date().toISOString() }));
 
     let inserted = 0;
     for (const batch of chunk(insertRows, 200)) {
-      const { error } = await supabase.from("cow_movement").insert(batch);
-      if (error) throw new Error(error.message);
+      const { valueSql, params } = buildMultiInsert(MOVEMENT_COLS, batch);
+      await pool.query(`INSERT INTO cow_movement ${valueSql}`, params);
       inserted += batch.length;
     }
 

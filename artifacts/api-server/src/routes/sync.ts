@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { supabase } from "../lib/supabase.js";
+import { pool } from "../lib/db.js";
 import { runFullSync, runSingleSync, syncRunning } from "../lib/sync.js";
 import {
   GetSyncStatusResponse,
@@ -15,33 +15,29 @@ router.get("/sync/status", async (req, res): Promise<void> => {
 
   const results = await Promise.all(
     tables.map(async (table) => {
-      const { count } = await supabase
-        .from(table)
-        .select("*", { count: "exact", head: true });
+      const [countRes, syncedRes, logRes] = await Promise.all([
+        pool.query(`SELECT COUNT(*) FROM ${table}`),
+        pool.query(
+          `SELECT synced_at FROM ${table} ORDER BY synced_at DESC LIMIT 1`,
+        ),
+        pool.query(
+          `SELECT status, error_message FROM sync_log
+           WHERE table_name = $1 ORDER BY synced_at DESC LIMIT 1`,
+          [table],
+        ),
+      ]);
 
-      const { data: syncedRow } = await supabase
-        .from(table)
-        .select("synced_at")
-        .order("synced_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const { data: logRow } = await supabase
-        .from("sync_log")
-        .select("status, error_message")
-        .eq("table_name", table)
-        .order("synced_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
+      const logRow = logRes.rows[0] ?? null;
       return {
         table_name: table,
-        row_count: count ?? 0,
-        last_synced_at: syncedRow?.synced_at ?? null,
-        status: logRow ? (logRow.status === "ok" ? "ok" : "error") : "never_synced",
+        row_count: parseInt(countRes.rows[0].count, 10),
+        last_synced_at: syncedRes.rows[0]?.synced_at ?? null,
+        status: logRow
+          ? (logRow.status === "ok" ? "ok" : "error")
+          : "never_synced",
         last_error: logRow?.error_message ?? null,
       };
-    })
+    }),
   );
 
   res.json(GetSyncStatusResponse.parse(results));
@@ -55,23 +51,19 @@ router.get("/sync/logs", async (req, res): Promise<void> => {
   }
   const { limit = 50, table } = parsed.data;
 
-  let query = supabase
-    .from("sync_log")
-    .select("id, table_name, rows_synced, status, error_message, duration_ms, synced_at")
-    .order("synced_at", { ascending: false })
-    .limit(limit);
+  const params: unknown[] = [limit];
+  const tableFilter = table ? `WHERE table_name = $${params.push(table)}` : "";
 
-  if (table) {
-    query = query.eq("table_name", table);
-  }
+  const { rows } = await pool.query(
+    `SELECT id, table_name, rows_synced, status, error_message, duration_ms, synced_at
+     FROM sync_log
+     ${tableFilter}
+     ORDER BY synced_at DESC
+     LIMIT $1`,
+    params,
+  );
 
-  const { data, error } = await query;
-  if (error) {
-    res.status(500).json({ error: error.message });
-    return;
-  }
-
-  res.json(GetSyncLogsResponse.parse(data ?? []));
+  res.json(GetSyncLogsResponse.parse(rows));
 });
 
 router.post("/sync/run", async (req, res): Promise<void> => {
@@ -81,7 +73,7 @@ router.post("/sync/run", async (req, res): Promise<void> => {
   }
   req.log.info("Full sync triggered");
   const tables = await runFullSync();
-  res.json({ success: tables.every(t => t.success), tables });
+  res.json({ success: tables.every((t) => t.success), tables });
 });
 
 router.post("/sync/run/:table", async (req, res): Promise<void> => {

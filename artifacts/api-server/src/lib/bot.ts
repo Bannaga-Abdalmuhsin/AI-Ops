@@ -1,6 +1,6 @@
 import TelegramBot from "node-telegram-bot-api";
 import OpenAI from "openai";
-import { supabase } from "./supabase.js";
+import { pool } from "./db.js";
 import { logger } from "./logger.js";
 import {
   type Movement,
@@ -36,14 +36,13 @@ async function auditLog(
   responseType: string,
 ): Promise<void> {
   try {
-    await supabase.from("bot_audit_log").insert({
-      telegram_user_id: userId,
-      category,
-      query_text: queryText.slice(0, 500),
-      response_type: responseType,
-    });
+    await pool.query(
+      `INSERT INTO bot_audit_log (telegram_user_id, category, query_text, response_type)
+       VALUES ($1, $2, $3, $4)`,
+      [userId, category, queryText.slice(0, 500), responseType],
+    );
   } catch (err) {
-    logger.warn({ err }, "Failed to write bot_audit_log — run security migration");
+    logger.warn({ err }, "Failed to write bot_audit_log");
   }
 }
 
@@ -438,43 +437,29 @@ function buildDataPayload(
   };
 }
 
-// Fetch ALL movement records by paginating in parallel (Supabase caps at 1000/request).
-// Lightweight version (date + id only) — used for year-chart aggregation.
+// Fetch ALL movement records — lightweight (date + cow_id only) for year/month chart aggregation.
 async function paginateAllMovements(
   cowId?: string
 ): Promise<Record<string, unknown>[]> {
-  const PAGE = 1000;
-  const offsets = [0, 1000, 2000];
-  const pages = await Promise.all(
-    offsets.map((from) => {
-      let q = supabase
-        .from("cow_movement")
-        .select("moved_date, cow_id")
-        .range(from, from + PAGE - 1)
-        .order("moved_date", { ascending: true });
-      if (cowId) q = q.eq("cow_id", cowId) as typeof q;
-      return q;
-    })
-  );
-  return pages.flatMap((p) => (p.data ?? []) as Record<string, unknown>[]);
+  const { rows } = cowId
+    ? await pool.query(
+        "SELECT moved_date, cow_id FROM cow_movement WHERE cow_id = $1 ORDER BY moved_date ASC",
+        [cowId],
+      )
+    : await pool.query(
+        "SELECT moved_date, cow_id FROM cow_movement ORDER BY moved_date ASC",
+      );
+  return rows;
 }
 
 // Full movement records (all analytics fields) — used for warehouse/events analysis.
 async function paginateAllMovementsFull(): Promise<Movement[]> {
-  const PAGE = 1000;
-  const offsets = [0, 1000, 2000];
-  const pages = await Promise.all(
-    offsets.map((from) =>
-      supabase
-        .from("cow_movement")
-        .select(
-          "cow_id, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor"
-        )
-        .range(from, from + PAGE - 1)
-        .order("moved_date", { ascending: true })
-    )
+  const { rows } = await pool.query(
+    `SELECT cow_id, moved_date, from_location, to_location, movement_type,
+            distance, region_from, region_to, vendor
+     FROM cow_movement ORDER BY moved_date ASC`,
   );
-  return pages.flatMap((p) => (p.data ?? []) as Movement[]);
+  return rows as Movement[];
 }
 
 // Chart dimension detection — returns which dimension to visualize, or null if not a chart request.
@@ -850,11 +835,11 @@ async function answerQuery(
 
   // ── On-air days — always from CMDB, works for never-moved COWs too ────────
   if (cowId && detectOnAirDaysQuery(query)) {
-    const { data: cmdbRow } = await supabase
-      .from("cmdb")
-      .select("cow_id, site_label, first_deploying_date, last_deploying_date, site_status, region, city")
-      .eq("cow_id", cowId)
-      .maybeSingle();
+    const _onAirRes = await pool.query(
+      "SELECT cow_id, site_label, first_deploying_date, last_deploying_date, site_status, region, city FROM cmdb WHERE cow_id = $1 LIMIT 1",
+      [cowId],
+    );
+    const cmdbRow = _onAirRes.rows[0] ?? null;
 
     if (cmdbRow) {
       const firstRaw = cmdbRow.first_deploying_date as string | null;
@@ -919,15 +904,16 @@ async function answerQuery(
       );
       return;
     }
-    let q = supabase
-      .from("cmdb")
-      .select("cow_id, site_label, location, site_status")
-      .order("cow_id", { ascending: true })
-      .limit(1000);
-    if (city) q = q.ilike("city", `%${city}%`) as typeof q;
-    else if (regionSearch) q = q.ilike("region", `%${regionSearch}%`) as typeof q;
-    if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
-    const { data: rows } = await q;
+    const _listConds: string[] = [];
+    const _listParams: unknown[] = [];
+    if (city) { _listConds.push(`city ILIKE $${_listParams.push(`%${city}%`)}`); }
+    else if (regionSearch) { _listConds.push(`region ILIKE $${_listParams.push(`%${regionSearch}%`)}`); }
+    if (status) { _listConds.push(`site_status ILIKE $${_listParams.push(`%${status}%`)}`); }
+    const _listWhere = _listConds.length > 0 ? `WHERE ${_listConds.join(" AND ")}` : "";
+    const { rows } = await pool.query(
+      `SELECT cow_id, site_label, location, site_status FROM cmdb ${_listWhere} ORDER BY cow_id LIMIT 1000`,
+      _listParams,
+    );
 
     if (!rows || rows.length === 0) {
       const label = city ?? regionSearch ?? status ?? "that filter";
@@ -981,11 +967,14 @@ async function answerQuery(
   // ── CMDB count fast-path — exact Supabase count, no GPT ──────────────────
   if (category === "cmdb" && !cowId && detectCountQuery(query)) {
     const { region, regionLabel, regionSearch, status, city } = extractTextFilters(query);
-    let q = supabase.from("cmdb").select("*", { count: "exact", head: true });
-    if (city) q = q.ilike("city", `%${city}%`) as typeof q;
-    else if (regionSearch) q = q.ilike("region", `%${regionSearch}%`) as typeof q;
-    if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
-    const { count } = await q;
+    const _cntConds: string[] = [];
+    const _cntParams: unknown[] = [];
+    if (city) { _cntConds.push(`city ILIKE $${_cntParams.push(`%${city}%`)}`); }
+    else if (regionSearch) { _cntConds.push(`region ILIKE $${_cntParams.push(`%${regionSearch}%`)}`); }
+    if (status) { _cntConds.push(`site_status ILIKE $${_cntParams.push(`%${status}%`)}`); }
+    const _cntWhere = _cntConds.length > 0 ? `WHERE ${_cntConds.join(" AND ")}` : "";
+    const _cntRes = await pool.query(`SELECT COUNT(*) FROM cmdb ${_cntWhere}`, _cntParams);
+    const count = parseInt(_cntRes.rows[0].count, 10);
     const cityLabel = city ? `in *${city.charAt(0).toUpperCase() + city.slice(1)}*` :
       regionLabel ? `in *${regionLabel}* region` : "total";
     const statusLabel = status ? `*${status}* COWs` : "COWs";
@@ -1002,10 +991,11 @@ async function answerQuery(
   if (category === "movement") {
     // 0a. Exact count for a specific COW — bypass GPT entirely
     if (cowId && detectCountQuery(query)) {
-      const { count } = await supabase
-        .from("cow_movement")
-        .select("*", { count: "exact", head: true })
-        .eq("cow_id", cowId);
+      const _mvCowCntRes = await pool.query(
+        "SELECT COUNT(*) FROM cow_movement WHERE cow_id = $1",
+        [cowId],
+      );
+      const count = parseInt(_mvCowCntRes.rows[0].count, 10);
       await bot.sendMessage(
         chatId,
         `📊 *${cowId}* has moved *${(count ?? 0).toLocaleString()} times*`,
@@ -1017,15 +1007,13 @@ async function answerQuery(
     // 0b. Exact count for a region (no cowId) — no row fetch, no limit cap
     if (!cowId && detectCountQuery(query)) {
       const { region, regionLabel } = extractTextFilters(query);
-      let q = supabase
-        .from("cow_movement")
-        .select("*", { count: "exact", head: true });
-      if (region) {
-        q = q.or(
-          `region_from.eq.${region},region_to.eq.${region}`
-        ) as typeof q;
-      }
-      const { count } = await q;
+      const _mvRegCntRes = region
+        ? await pool.query(
+            "SELECT COUNT(*) FROM cow_movement WHERE region_from = $1 OR region_to = $1",
+            [region],
+          )
+        : await pool.query("SELECT COUNT(*) FROM cow_movement");
+      const count = parseInt(_mvRegCntRes.rows[0].count, 10);
       const displayLabel = regionLabel ? `*${regionLabel}* region` : "all regions";
       await bot.sendMessage(
         chatId,
@@ -1037,11 +1025,11 @@ async function answerQuery(
 
     // 1. Never-moved COWs
     if (detectNeverMovedQuery(query)) {
-      const [{ data: cmdbRows }, allMoves] = await Promise.all([
-        supabase.from("cmdb").select("cow_id").limit(1000),
+      const [_cmdbIdsRes, allMoves] = await Promise.all([
+        pool.query("SELECT cow_id FROM cmdb LIMIT 1000"),
         paginateAllMovements(),
       ]);
-      const cmdbIds = (cmdbRows ?? []).map((r) => r.cow_id as string).filter(Boolean);
+      const cmdbIds = _cmdbIdsRes.rows.map((r) => r.cow_id as string).filter(Boolean);
       const movedIds = new Set(allMoves.map((m) => m.cow_id as string).filter(Boolean));
       const neverMoved = getNeverMovedCows(cmdbIds, movedIds);
       const neverCount = neverMoved.length;
@@ -1180,9 +1168,12 @@ async function answerQuery(
 
   try {
     if (category === "cmdb") {
-      let q = supabase.from("cmdb").select("*");
       if (cowId) {
-        q = q.eq("cow_id", cowId).limit(10) as typeof q;
+        const { rows } = await pool.query(
+          "SELECT * FROM cmdb WHERE cow_id = $1 LIMIT 10",
+          [cowId],
+        );
+        data = rows;
       } else {
         const { regionSearch, status, city } = extractTextFilters(query);
         // Guard: require at least one meaningful filter — if the query has no recognisable
@@ -1195,46 +1186,53 @@ async function answerQuery(
           );
           return;
         }
-        if (city) q = q.ilike("city", `%${city}%`) as typeof q;
-        else if (regionSearch) q = q.ilike("region", `%${regionSearch}%`) as typeof q;
-        if (status) q = q.ilike("site_status", `%${status}%`) as typeof q;
-        q = q.limit(1000) as typeof q;
+        const _gConds: string[] = [];
+        const _gParams: unknown[] = [];
+        if (city) { _gConds.push(`city ILIKE $${_gParams.push(`%${city}%`)}`); }
+        else if (regionSearch) { _gConds.push(`region ILIKE $${_gParams.push(`%${regionSearch}%`)}`); }
+        if (status) { _gConds.push(`site_status ILIKE $${_gParams.push(`%${status}%`)}`); }
+        const _gWhere = _gConds.length > 0 ? `WHERE ${_gConds.join(" AND ")}` : "";
+        const { rows } = await pool.query(
+          `SELECT * FROM cmdb ${_gWhere} LIMIT 1000`,
+          _gParams,
+        );
+        data = rows;
       }
-      const { data: rows } = await q;
-      data = rows ?? [];
       tableContext =
         "CMDB infrastructure data. Fields: cow_id, site_label, region, district, city, location, site_status, vendor, technology, latitude, longitude, first_deploying_date, last_deploying_date.";
     } else {
-      let q = supabase
-        .from("cow_movement")
-        .select("*")
-        .order("moved_date", { ascending: false });
       if (cowId) {
         // Fetch rows AND exact count in parallel so the header is always accurate.
-        const [countResult, rowsResult] = await Promise.all([
-          supabase
-            .from("cow_movement")
-            .select("*", { count: "exact", head: true })
-            .eq("cow_id", cowId),
-          q.eq("cow_id", cowId).limit(200),
+        const [_gMvCntRes, _gMvRowsRes] = await Promise.all([
+          pool.query(
+            "SELECT COUNT(*) FROM cow_movement WHERE cow_id = $1",
+            [cowId],
+          ),
+          pool.query(
+            "SELECT * FROM cow_movement WHERE cow_id = $1 ORDER BY moved_date DESC LIMIT 200",
+            [cowId],
+          ),
         ]);
-        data = rowsResult.data ?? [];
-        // Use count from Supabase (not data.length) — captures rows beyond the 200 limit.
-        const exactCount = countResult.count ?? data.length;
+        data = _gMvRowsRes.rows;
+        // Use count from DB (not data.length) — captures rows beyond the 200 limit.
+        const exactCount = parseInt(_gMvCntRes.rows[0].count, 10);
         tableContext =
           `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.\n\n` +
           `EXACT_TRIP_COUNT: ${exactCount}\n` +
           `⚠️ You MUST use EXACT_TRIP_COUNT (${exactCount}) as {N} in the movement header — never count the rows yourself.`;
       } else {
         const { region } = extractTextFilters(query);
+        let _mvWhere2 = "";
+        const _mvParams2: unknown[] = [];
         if (region) {
-          q = q.or(
-            `region_from.eq.${region},region_to.eq.${region}`
-          ) as typeof q;
+          _mvParams2.push(region);
+          _mvWhere2 = "WHERE (region_from = $1 OR region_to = $1)";
         }
-        q = q.limit(1000) as typeof q;
-        const { data: rows } = await q;
-        data = rows ?? [];
+        const { rows } = await pool.query(
+          `SELECT * FROM cow_movement ${_mvWhere2} ORDER BY moved_date DESC LIMIT 1000`,
+          _mvParams2,
+        );
+        data = rows;
         tableContext = `COW movement history. Fields: cow_id, site_label, moved_date, from_location, to_location, movement_type, distance, region_from, region_to, vendor.
 
 REGIONAL QUERY RULE:
@@ -1256,7 +1254,7 @@ SAUDI EVENTS CONTEXT — use ONLY when the user asks about patterns, spikes, or 
       }
     }
   } catch (err) {
-    logger.error({ err }, "Supabase query error");
+    logger.error({ err }, "Database query error");
   }
 
   if (data.length === 0) {

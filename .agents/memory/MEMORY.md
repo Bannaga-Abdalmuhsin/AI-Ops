@@ -2,3 +2,4 @@
 - [Supabase table creation](supabase-table-creation.md) — Tables can't be created programmatically (Management API needs PAT); use SQL Editor manually.
 - [Movement region codes](movement-region-codes.md) — cow_movement uses 2-letter codes (WR/CR/ER/SR); CMDB uses full words (West/Central/EAST/South); bot uses separate filter paths.
 - [Telegram webhook setup](telegram-webhook-setup.md) — Production domain is sheet-sync-bannagaaltieb1.replit.app; secret_token must be hex-only (A-Z a-z 0-9 _ - only); TELEGRAM_WEBHOOK_DOMAIN env var drives registration.
+- [DB migration to local PostgreSQL](db-migration-local-pg.md) — Migrated from Supabase to Replit built-in PostgreSQL (DATABASE_URL, pg Pool); supabase.ts kept but unused; sync schedule changed from daily to every 2 hours.

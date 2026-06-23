@@ -19,10 +19,10 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 // ── Scheduled auto-sync ─────────────────────────────────────────────────────
-// Default: every day at 02:00 UTC. Override with SYNC_CRON_SCHEDULE env var.
+// Default: every 2 hours. Override with SYNC_CRON_SCHEDULE env var.
 // Uses standard cron syntax: minute hour day-of-month month day-of-week
-// Examples: "0 2 * * *" = daily 02:00 UTC | "0 */12 * * *" = every 12 hours
-const SYNC_SCHEDULE = process.env.SYNC_CRON_SCHEDULE ?? "0 2 * * *";
+// Examples: "0 */2 * * *" = every 2 hours | "0 */6 * * *" = every 6 hours
+const SYNC_SCHEDULE = process.env.SYNC_CRON_SCHEDULE ?? "0 */2 * * *";
 
 function scheduleAutoSync(): void {
   if (!cron.validate(SYNC_SCHEDULE)) {

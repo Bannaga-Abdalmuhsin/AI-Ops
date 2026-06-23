@@ -5,12 +5,12 @@
  *   1. ADMIN_TELEGRAM_IDS env var — comma-separated Telegram user IDs that are
  *      permanently granted admin role without needing a DB entry. Used for
  *      bootstrapping before the bot_users table exists.
- *   2. bot_users Supabase table — individual records with role + expiry.
+ *   2. bot_users local PostgreSQL table — individual records with role + expiry.
  *
  * The in-memory cache is invalidated after every admin mutation.
  */
 
-import { supabase } from "./supabase.js";
+import { pool } from "./db.js";
 import { logger } from "./logger.js";
 
 export type BotRole = "viewer" | "operator" | "admin";
@@ -41,7 +41,7 @@ if (ENV_ADMIN_IDS.size === 0) {
 }
 
 let cache: Map<number, BotUser> | null = null;
-let tableExists: boolean | null = null;   // null = unknown, false = missing
+let tableExists: boolean | null = null;
 
 export function isEnvAdmin(userId: number): boolean {
   return ENV_ADMIN_IDS.has(userId);
@@ -49,32 +49,26 @@ export function isEnvAdmin(userId: number): boolean {
 
 async function loadCache(): Promise<Map<number, BotUser>> {
   const map = new Map<number, BotUser>();
-  if (tableExists === false) return map;          // known missing — skip
+  if (tableExists === false) return map;
 
   try {
-    const { data, error } = await supabase
-      .from("bot_users")
-      .select("*")
-      .eq("active", true);
-
-    if (error) {
-      if (error.code === "42P01") {               // undefined_table
-        tableExists = false;
-        logger.warn(
-          "bot_users table missing — run scripts/migrate-supabase-security.sql in Supabase SQL Editor",
-        );
-      } else {
-        logger.error({ err: error }, "Failed to load bot_users");
-      }
-      return map;
-    }
-
+    const result = await pool.query(
+      "SELECT * FROM bot_users WHERE active = true",
+    );
     tableExists = true;
-    for (const u of data ?? []) {
+    for (const u of result.rows) {
       map.set(u.telegram_user_id as number, u as BotUser);
     }
-  } catch (err) {
-    logger.error({ err }, "Unexpected error loading bot_users");
+  } catch (err: unknown) {
+    const pgErr = err as { code?: string; message?: string };
+    if (pgErr?.code === "42P01") {
+      tableExists = false;
+      logger.warn(
+        "bot_users table missing — run scripts/migrate-supabase-security.sql in Supabase SQL Editor",
+      );
+    } else {
+      logger.error({ err }, "Failed to load bot_users");
+    }
   }
   return map;
 }
@@ -112,29 +106,28 @@ export async function addUser(
   if (tableExists === false) {
     throw new Error("bot_users table does not exist — run the security migration first");
   }
-  const { error } = await supabase.from("bot_users").upsert(
-    {
-      telegram_user_id: telegramUserId,
-      username: username ?? null,
-      role,
-      active: true,
-      approved_by: approvedBy,
-    },
-    { onConflict: "telegram_user_id" },
+  await pool.query(
+    `INSERT INTO bot_users (telegram_user_id, username, role, active, approved_by)
+     VALUES ($1, $2, $3, true, $4)
+     ON CONFLICT (telegram_user_id) DO UPDATE SET
+       username = EXCLUDED.username,
+       role = EXCLUDED.role,
+       active = true,
+       approved_by = EXCLUDED.approved_by`,
+    [telegramUserId, username ?? null, role, approvedBy],
   );
-  if (error) throw new Error(error.message);
   invalidateCache();
 }
 
 /** Deactivate a user (soft-delete). */
 export async function revokeUser(telegramUserId: number): Promise<boolean> {
   if (tableExists === false) return false;
-  const { error, count } = await supabase
-    .from("bot_users")
-    .update({ active: false })
-    .eq("telegram_user_id", telegramUserId);
+  const result = await pool.query(
+    "UPDATE bot_users SET active = false WHERE telegram_user_id = $1",
+    [telegramUserId],
+  );
   invalidateCache();
-  return !error && (count ?? 0) > 0;
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** List all active users from the DB (plus env admins). */
@@ -155,7 +148,6 @@ export async function listAllUsers(): Promise<
     role: "admin" as const,
     source: "env",
   }));
-  // Merge: env admins override DB entries for same ID
   const seen = new Set(envAdmins.map((u) => u.id));
   return [...envAdmins, ...dbUsers.filter((u) => !seen.has(u.id))];
 }
