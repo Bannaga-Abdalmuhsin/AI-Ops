@@ -462,6 +462,12 @@ async function paginateAllMovementsFull(): Promise<Movement[]> {
   return rows as Movement[];
 }
 
+// Extract a 4-digit year from a query string (e.g. "2025 movements by month" → 2025).
+function detectYearFilter(query: string): number | null {
+  const match = query.match(/\b(20\d{2})\b/);
+  return match ? parseInt(match[1]!, 10) : null;
+}
+
 // Chart dimension detection — returns which dimension to visualize, or null if not a chart request.
 type ChartDimension = "year" | "month" | "region" | "warehouse" | "event_type" | "vendor" | "avg_distance";
 
@@ -1108,12 +1114,22 @@ async function answerQuery(
 
       if (chartDim === "year" || chartDim === "month") {
         const lightData = await paginateAllMovements(cowId);
+        const yearFilter = detectYearFilter(query);
         if (chartDim === "year") {
           ({ labels, values } = aggregateMovementsByYear(lightData));
           chartTitle = cowId ? `Movements by Year — ${cowId}` : "Total COW Movements by Year";
         } else {
-          ({ labels, values } = aggregateByMonth(lightData));
-          chartTitle = cowId ? `Movements by Month — ${cowId}` : "COW Movements by Month";
+          const filtered = yearFilter
+            ? lightData.filter((r) => {
+                const d = new Date(r.moved_date as string);
+                return !isNaN(d.getTime()) && d.getFullYear() === yearFilter;
+              })
+            : lightData;
+          ({ labels, values } = aggregateByMonth(filtered));
+          const yearLabel = yearFilter ? ` (${yearFilter})` : "";
+          chartTitle = cowId
+            ? `Movements by Month — ${cowId}${yearLabel}`
+            : `COW Movements by Month${yearLabel}`;
         }
       } else {
         const fullData = await paginateAllMovementsFull();
