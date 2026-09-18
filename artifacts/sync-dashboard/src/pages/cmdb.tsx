@@ -112,7 +112,7 @@ export default function Cmdb() {
 
   const { data, isLoading } = useGetCmdbData(
     { page: 1, limit: 1000 },
-    { query: { staleTime: 5 * 60 * 1000, keepPreviousData: true } }
+    { query: { staleTime: 5 * 60 * 1000, placeholderData: (previousData) => previousData } }
   );
 
   const allRows = (data?.data ?? []) as CmdbRow[];
