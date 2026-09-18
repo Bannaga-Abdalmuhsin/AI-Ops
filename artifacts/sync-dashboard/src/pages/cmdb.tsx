@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { useGetCmdbData } from "@workspace/api-client-react";
+import { useGetCmdbData, getGetCmdbDataQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -112,7 +112,7 @@ export default function Cmdb() {
 
   const { data, isLoading } = useGetCmdbData(
     { page: 1, limit: 1000 },
-    { query: { staleTime: 5 * 60 * 1000, placeholderData: (previousData) => previousData } }
+    { query: { queryKey: getGetCmdbDataQueryKey({ page: 1, limit: 1000 }), staleTime: 5 * 60 * 1000, placeholderData: (previousData) => previousData } }
   );
 
   const allRows = (data?.data ?? []) as CmdbRow[];
