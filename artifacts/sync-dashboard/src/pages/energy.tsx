@@ -14,7 +14,7 @@ export default function Energy() {
 
   const { data, isLoading } = useGetEnergyDashboardData(
     { page, limit: 20, search: debouncedSearch || undefined },
-    { query: { queryKey: getGetEnergyDashboardDataQueryKey({ page, limit: 20, search: debouncedSearch || undefined }), keepPreviousData: true } }
+    { query: { queryKey: getGetEnergyDashboardDataQueryKey({ page, limit: 20, search: debouncedSearch || undefined }), placeholderData: (previousData) => previousData } }
   );
 
   return (
