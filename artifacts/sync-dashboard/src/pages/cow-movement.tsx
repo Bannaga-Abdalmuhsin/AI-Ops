@@ -14,7 +14,7 @@ export default function CowMovement() {
 
   const { data, isLoading } = useGetCowMovementData(
     { page, limit: 20, search: debouncedSearch || undefined },
-    { query: { queryKey: getGetCowMovementDataQueryKey({ page, limit: 20, search: debouncedSearch || undefined }), keepPreviousData: true } }
+    { query: { queryKey: getGetCowMovementDataQueryKey({ page, limit: 20, search: debouncedSearch || undefined }), placeholderData: (previousData) => previousData } }
   );
 
   return (
