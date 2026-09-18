@@ -47,3 +47,15 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Local credentials and generated output
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+**/node_modules/
+**/dist/
+**/.cache/
+*.pem
+*.p12
